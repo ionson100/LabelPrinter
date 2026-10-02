@@ -1,0 +1,157 @@
+<Window x:Class="LabelPrinter.Views.PrintersWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Принтеры"
+        Height="560" Width="820"
+        MinHeight="480" MinWidth="720"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize"
+        Background="{StaticResource SurfaceAltBrush}"
+        FontFamily="Segoe UI"
+        TextOptions.TextFormattingMode="Ideal">
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ============ список принтеров ============ -->
+            <Border Grid.Column="0" Style="{StaticResource Card}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="СПИСОК ПРИНТЕРОВ"
+                               Style="{StaticResource CardTitle}"/>
+
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="Добавить" Command="{Binding AddCommand}"
+                                Style="{StaticResource SecondaryButton}" Padding="10,5" MinWidth="0"/>
+                        <Button Content="Копия" Command="{Binding DuplicateCommand}"
+                                Style="{StaticResource SecondaryButton}" Padding="10,5" MinWidth="0" Margin="6,0,0,0"/>
+                        <Button Content="Удалить" Command="{Binding RemoveCommand}"
+                                Style="{StaticResource SecondaryButton}" Padding="10,5" MinWidth="0" Margin="6,0,0,0"/>
+                    </StackPanel>
+
+                    <ListBox ItemsSource="{Binding Printers}"
+                             SelectedItem="{Binding Selected}"
+                             BorderThickness="1"
+                             BorderBrush="{StaticResource BorderBrushSoft}"
+                             Background="White">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="4,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox Grid.Column="0" IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                              VerticalAlignment="Center" Margin="0,0,6,0"
+                                              ToolTip="Использовать этот принтер для печати"/>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                        <TextBlock Style="{StaticResource Caption}">
+                                            <Run Text="{Binding Host, Mode=OneWay}"/>
+                                            <Run Text=":"/>
+                                            <Run Text="{Binding Port, Mode=OneWay}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <!-- ============ свойства выбранного ============ -->
+            <Border Grid.Column="2" Style="{StaticResource Card}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="СВОЙСТВА ПРИНТЕРА"
+                               Style="{StaticResource CardTitle}"/>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel DataContext="{Binding Selected}">
+                            <TextBlock Text="Имя" Style="{StaticResource Caption}"/>
+                            <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,10"/>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="110"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="IP-адрес" Style="{StaticResource Caption}"/>
+                                    <TextBox Text="{Binding Host, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Порт" Style="{StaticResource Caption}"/>
+                                    <TextBox Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <TextBlock Text="Формат этикетки (имя шаблона в принтере)"
+                                       Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+                            <TextBox Text="{Binding FormatName, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0"/>
+
+                            <TextBlock Text="Переменная формата, получающая код"
+                                       Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+                            <TextBox Text="{Binding VariableName, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0"/>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Печатающая голова (BoardId)" Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+                                    <TextBox Text="{Binding BoardId, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="Активировать" Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+                                    <CheckBox Content="Использовать в печати"
+                                              IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                              VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <CheckBox Content="Кэш формата (useCache) — только если формат уже загружался вручную"
+                                      IsChecked="{Binding UseFormatCache, Mode=TwoWay}"/>
+
+                            <Border Background="#FFF8E1" CornerRadius="4" Padding="10" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="ПОДСКАЗКА" Style="{StaticResource Caption}" FontWeight="SemiBold"/>
+                                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,0">
+                                        Формат «demo» и переменная «code» должны существовать в памяти принтера.
+                                        Проверить можно кнопкой «Список форматов» в журнале после подключения.
+                                    </TextBlock>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- ============ ошибки валидации ============ -->
+        <Border Grid.Row="1" Background="#FDECEA" CornerRadius="4" Padding="10" Margin="0,10,0,0"
+                Visibility="{Binding HasValidationMessage, Converter={StaticResource BoolToVisibility}}">
+            <TextBlock Text="{Binding ValidationMessage}" Foreground="#B4231C" TextWrapping="Wrap"/>
+        </Border>
+
+        <!-- ============ кнопки ============ -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Сохранить" Click="OnSaveClick"
+                    Style="{StaticResource PrimaryButton}" MinWidth="110"/>
+            <Button Content="Отмена" Click="OnCancelClick"
+                    Style="{StaticResource SecondaryButton}" MinWidth="100" Margin="0"/>
+        </StackPanel>
+    </Grid>
+</Window>

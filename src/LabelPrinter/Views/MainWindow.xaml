@@ -1,0 +1,278 @@
+<Window x:Class="LabelPrinter.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Печать этикеток GS1 — APLINK (MRX72e / HRX)"
+        Height="820" Width="1280"
+        MinHeight="640" MinWidth="1040"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource SurfaceAltBrush}"
+        FontFamily="Segoe UI"
+        TextOptions.TextFormattingMode="Ideal">
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- верхняя панель -->
+            <RowDefinition Height="Auto"/>   <!-- показатели -->
+            <RowDefinition Height="*"/>      <!-- принтеры + настройки -->
+            <RowDefinition Height="4"/>
+            <RowDefinition Height="2*"/>    <!-- журнал -->
+        </Grid.RowDefinitions>
+
+        <!-- ==================== ВЕРХНЯЯ ПАНЕЛЬ ==================== -->
+        <Border Grid.Row="0" Style="{StaticResource Card}" Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="Печать этикеток" FontSize="18" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextBrush}"/>
+                    <TextBlock Text="{Binding StatusMessage}" Style="{StaticResource Caption}"
+                               Margin="0,2,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="{Binding PrintButtonText}"
+                            Command="{Binding PrintCommand}"
+                            Style="{StaticResource PrintToggleButton}"
+                            MinWidth="120" Margin="0,0,8,0"
+                            ToolTip="Запустить или остановить печать на всех активных принтерах"/>
+
+                    <Button Content="Принтеры"
+                            Command="{Binding PrintersCommand}"
+                            Style="{StaticResource SecondaryButton}" ToolTip="Добавить, удалить или активировать принтер"/>
+
+                    <Button Content="Показать размер буфера"
+                            Command="{Binding ShowBufferCommand}"
+                            Style="{StaticResource SecondaryButton}"
+                            ToolTip="Сколько кодов в буфере Redis и сколько свободно в базе"/>
+
+                    <Button Content="Очистить буфер"
+                            Command="{Binding ClearBufferCommand}"
+                            Style="{StaticResource SecondaryButton}"
+                            ToolTip="Очистить буферы и перезалить базу. Только при остановленной печати."
+                            Margin="0"/>
+
+                    <Button Content="Переподключить"
+                            Command="{Binding ReconnectCommand}"
+                            Style="{StaticResource SecondaryButton}"
+                            ToolTip="Пересоздать подключения к принтерам"
+                            Margin="8,0,0,0"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== ПОКАЗАТЕЛИ ==================== -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,0,0,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <UniformGrid Grid.Column="0" Columns="4" Rows="1">
+                    <StackPanel Margin="0,0,12,0">
+                        <TextBlock Text="КОДОВ В БУФЕРЕ" Style="{StaticResource Caption}"/>
+                        <TextBlock Text="{Binding MetricBuffer}" Style="{StaticResource ValueText}"
+                                   FontSize="19" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,12,0">
+                        <TextBlock Text="СВОБОДНО В БАЗЕ" Style="{StaticResource Caption}"/>
+                        <TextBlock Text="{Binding MetricFree}" Style="{StaticResource ValueText}"
+                                   FontSize="19" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <StackPanel Margin="0,0,12,0">
+                        <TextBlock Text="ВЫДАНО КОДОВ" Style="{StaticResource Caption}"/>
+                        <TextBlock Text="{Binding MetricIssued}" Style="{StaticResource ValueText}"
+                                   FontSize="19" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock Text="НАПЕЧАТАНО ЗА СЕАНС" Style="{StaticResource Caption}"/>
+                        <TextBlock Text="{Binding MetricPrinted}" Style="{StaticResource ValueText}"
+                                   FontSize="19" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </UniformGrid>
+
+                <StackPanel Grid.Column="1" Margin="16,0,0,0" MinWidth="420">
+                    <TextBlock Text="НАСТРОЙКИ ПЕЧАТИ" Style="{StaticResource Caption}" Margin="0,0,0,4"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Буфер:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox Width="56" Text="{Binding BufferSize, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="порог:" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                        <TextBox Width="48" Text="{Binding BufferThreshold, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="кодов в базе:" VerticalAlignment="Center" Margin="12,0,6,0"/>
+                        <TextBox Width="72" Text="{Binding InitialCodeCount, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="опрос, мс:" VerticalAlignment="Center" Margin="12,0,6,0"
+                                   ToolTip="Как часто опрашивается счётчик напечатанных этикеток. Одновременно это пауза перед отправкой следующего кода: 100 мс ≈ 10 этикеток/с"/>
+                        <TextBox Width="56" Text="{Binding PollIntervalMs, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="Минимум 100 мс"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                        <CheckBox Content="Тестовый принтер" IsChecked="{Binding TestPrinterMode}" Margin="0,0,12,0"/>
+                        <TextBlock Text="интервал, с:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox Width="48" Text="{Binding TestIntervalSeconds, UpdateSourceTrigger=PropertyChanged}"/>
+                        <Button Content="Применить" Command="{Binding ApplySettingsCommand}"
+                                Style="{StaticResource SecondaryButton}"
+                                MinWidth="86" Margin="12,0,0,0" Padding="10,5"/>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== ПРИНТЕРЫ ==================== -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,10,0">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="ПРИНТЕРЫ" Style="{StaticResource CardTitle}"/>
+
+                    <Border DockPanel.Dock="Top" Background="{StaticResource SurfaceAltBrush}"
+                            CornerRadius="4" Padding="8,4" Margin="0,0,0,8">
+                        <TextBlock Text="{Binding BufferInfo}" TextWrapping="Wrap"
+                                   Foreground="{StaticResource TextMutedBrush}" FontSize="11"/>
+                    </Border>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Printers}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource SurfaceAltBrush}"
+                                            CornerRadius="4" Padding="10" Margin="0,0,0,6">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <!-- лампочка -->
+                                            <Ellipse Grid.Column="0" Width="16" Height="16" VerticalAlignment="Center"
+                                                     Fill="{Binding IsConnected, Converter={StaticResource ConnectedToBrush}}"
+                                                     Stroke="#9AA1AC" StrokeThickness="1"/>
+
+                                            <StackPanel Grid.Column="1" Margin="10,0,10,0">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding Printer.Name}"
+                                                               FontWeight="SemiBold" FontSize="13"
+                                                               Foreground="{StaticResource TextBrush}"/>
+                                                    <TextBlock Text="  •  " Foreground="{StaticResource TextMutedBrush}"/>
+                                                    <TextBlock Text="{Binding Printer.Endpoint}"
+                                                               Foreground="{StaticResource TextMutedBrush}" FontSize="12"/>
+                                                    <TextBlock Text="  •  "
+                                                               Foreground="{StaticResource TextMutedBrush}"/>
+                                                    <TextBlock Text="{Binding LinkText}"
+                                                               FontSize="12"
+                                                               Foreground="{StaticResource TextMutedBrush}"/>
+                                                </StackPanel>
+
+                                                <TextBlock FontSize="11" Margin="0,3,0,0"
+                                                           Foreground="{StaticResource TextMutedBrush}">
+                                                    <Run Text="формат"/>
+                                                    <Run Text="{Binding Printer.FormatName, Mode=OneWay}"/>
+                                                    <Run Text=", переменная"/>
+                                                    <Run Text="{Binding Printer.VariableName, Mode=OneWay}"/>
+                                                    <Run Text=", в буфере"/>
+                                                    <Run Text="{Binding BufferCount, Mode=OneWay}"/>
+                                                    <Run Text=", напечатано"/>
+                                                    <Run Text="{Binding PrintedThisSession, Mode=OneWay}"/>
+                                                </TextBlock>
+
+                                                <TextBlock FontSize="11" Margin="0,2,0,0" TextTrimming="CharacterEllipsis"
+                                                           Foreground="{StaticResource TextMutedBrush}">
+                                                    <Run Text="заряжен код:"/>
+                                                    <Run Text="{Binding ArmedCode, Converter={StaticResource CodeToDisplay}, Mode=OneWay}"
+                                                        FontFamily="Consolas"/>
+                                                </TextBlock>
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Column="2" VerticalAlignment="Center" MinWidth="86">
+                                                <TextBlock Text="ПЕЧАТЬ" Style="{StaticResource Caption}"
+                                                           HorizontalAlignment="Center"/>
+                                                <Ellipse Width="12" Height="12" HorizontalAlignment="Center"
+                                                         Fill="{Binding IsPrinting, Converter={StaticResource PrintingToBrush}}"
+                                                         Stroke="#9AA1AC" StrokeThickness="1"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource Card}" Width="240">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="СОСТОЯНИЕ" Style="{StaticResource CardTitle}"/>
+                    <StackPanel>
+                        <TextBlock Text="Буфер:" Style="{StaticResource Caption}"/>
+                        <TextBlock Style="{StaticResource ValueText}">
+                            <Run Text="{Binding MetricBuffer, Mode=OneWay}"/>
+                            <Run Text="код(ов)"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Свободно в базе:" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+                        <TextBlock Style="{StaticResource ValueText}">
+                            <Run Text="{Binding MetricFree, Mode=OneWay}"/>
+                            <Run Text="код(ов)"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Выдано:" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+                        <TextBlock Style="{StaticResource ValueText}">
+                            <Run Text="{Binding MetricIssued, Mode=OneWay}"/>
+                            <Run Text="код(ов)"/>
+                        </TextBlock>
+
+                        <TextBlock Text="Напечатано за сеанс:" Style="{StaticResource Caption}" Margin="0,8,0,0"/>
+                        <TextBlock Style="{StaticResource ValueText}">
+                            <Run Text="{Binding MetricPrinted, Mode=OneWay}"/>
+                            <Run Text="этикет(ок)"/>
+                        </TextBlock>
+
+                        <Separator Margin="0,12,0,12"/>
+
+                        <TextBlock Text="ПРИМЕР КОДА" Style="{StaticResource Caption}"/>
+                        <TextBlock Text="{Binding CodeSample}"
+                                   FontFamily="Consolas" FontSize="11" TextWrapping="Wrap"
+                                   Foreground="{StaticResource TextBrush}"/>
+
+                        <TextBlock Text="Разбор: (01) — GTIN-14, (21) — серийный номер,
+                                   (93) — 4 символа. &lt;gr&gt; — разделитель групп 0x1D."
+                                   Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- ==================== ЖУРНАЛ ==================== -->
+        <Border Grid.Row="4" Margin="0,4,0,0" MinHeight="180">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="2,0,2,4">
+                    <TextBlock Text="ЖУРНАЛ" Style="{StaticResource Caption}" VerticalAlignment="Center"/>
+                    <Button Content="Очистить журнал" HorizontalAlignment="Right"
+                            Style="{StaticResource SecondaryButton}"
+                            Padding="8,2" MinWidth="0" FontSize="11"
+                            Click="OnClearLogClick"/>
+                    <ProgressBar x:Name="BusyBar" Height="3" VerticalAlignment="Bottom"
+                                 Style="{StaticResource BusyBar}"
+                                 IsIndeterminate="True"
+                                 Foreground="{StaticResource AccentBrush}"
+                                 Background="Transparent"/>
+                </Grid>
+
+                <TextBox x:Name="LogBox" Grid.Row="1" Style="{StaticResource LogBox}"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
