@@ -76,10 +76,12 @@ namespace LabelPrinter.Core.Protocol
             return response.IsPrintReady ?? false;
         }
 
-        public Task SendLabelAsync(string formatName, string variableName, string value, CancellationToken cancellationToken)
+        public Task SendLabelAsync(string formatName,
+                                 IReadOnlyList<KeyValuePair<string, string>> variables,
+                                 CancellationToken cancellationToken)
         {
             return SendAsync(
-                Commands.SetPrintingFormat(formatName, variableName, value, _settings.UseFormatCache, _groupSeparatorAsEntity),
+                Commands.SetPrintingFormat(formatName, variables, _settings.UseFormatCache, _groupSeparatorAsEntity),
                 cancellationToken);
         }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using LabelPrinter.Core.Abstractions;
@@ -31,6 +32,13 @@ namespace LabelPrinter.Core.Runtime
         private readonly PrintRuntimeSettings _settings;
         private readonly CodeFormatSettings _codeFormat;
         private readonly IPrinterClient _client;
+
+        /// <summary>
+        /// Постоянные поля этикетки. Словарь заполняется один раз перед печатью,
+        /// но по протоколу APLINK значения уходят в каждой SET_PRINTING_FORMAT —
+        /// принтер не хранит их между этикетками.
+        /// </summary>
+        private readonly Func<IReadOnlyList<KeyValuePair<string, string>>> _fixedVariables;
 
         private CancellationTokenSource _cts;
         private Task _loop;
@@ -124,13 +132,15 @@ namespace LabelPrinter.Core.Runtime
                               IPrinterClient client,
                               ICodeSource source,
                               PrintRuntimeSettings settings,
-                              CodeFormatSettings codeFormat)
+                              CodeFormatSettings codeFormat,
+                              Func<IReadOnlyList<KeyValuePair<string, string>>> fixedVariables = null)
         {
             Printer = printer ?? throw new ArgumentNullException("printer");
             _client = client ?? throw new ArgumentNullException("client");
             _source = source ?? throw new ArgumentNullException("source");
             _settings = settings ?? throw new ArgumentNullException("settings");
             _codeFormat = codeFormat ?? new CodeFormatSettings();
+            _fixedVariables = fixedVariables ?? (() => new KeyValuePair<string, string>[0]);
 
             _settings.Normalize();
             _codeFormat.Normalize();
@@ -398,7 +408,11 @@ namespace LabelPrinter.Core.Runtime
 
             try
             {
-                await _client.SendLabelAsync(Printer.FormatName, Printer.VariableName, code, cancellationToken)
+                // Меняющееся значение (код) идёт первым, за ним — постоянные поля.
+                // Порядок сохраняется в команде для удобства разбора журнала.
+                var variables = BuildVariables(code);
+
+                await _client.SendLabelAsync(Printer.FormatName, variables, cancellationToken)
                              .ConfigureAwait(false);
                 await _client.SetPrintStatusAsync(true, cancellationToken).ConfigureAwait(false);
 
@@ -421,6 +435,49 @@ namespace LabelPrinter.Core.Runtime
                 HandleLinkLoss();
                 Raise();
             }
+        }
+
+        /// <summary>
+        /// Собирает набор переменных для одной этикетки: сначала код, затем
+        /// постоянные поля.
+        ///
+        /// Если постоянное поле названо так же, как переменная с кодом, оно
+        /// отбрасывается: иначе все этикетки тиража получили бы одно значение.
+        /// Такое столкновение почти всегда означает ошибку в настройках, поэтому
+        /// о нём пишем в журнал.
+        /// </summary>
+        private IReadOnlyList<KeyValuePair<string, string>> BuildVariables(string code)
+        {
+            var fixedFields = _fixedVariables();
+            if (fixedFields == null || fixedFields.Count == 0)
+            {
+                return new[] { new KeyValuePair<string, string>(Printer.VariableName, code) };
+            }
+
+            var result = new List<KeyValuePair<string, string>>(fixedFields.Count + 1);
+            result.Add(new KeyValuePair<string, string>(Printer.VariableName, code));
+
+            bool warned = false;
+            foreach (var field in fixedFields)
+            {
+                if (string.IsNullOrEmpty(field.Key)) continue;
+
+                if (string.Equals(field.Key, Printer.VariableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!warned)
+                    {
+                        Log.Warn("[" + Printer.Name + "] постоянное поле «" + field.Key +
+                                 "» совпадает с именем переменной с кодом — оно не передаётся. " +
+                                 "Переименуйте одно из них.");
+                        warned = true;
+                    }
+                    continue;
+                }
+
+                result.Add(field);
+            }
+
+            return result;
         }
 
         /// <summary>Просит источник долить буфер до полной вместимости.</summary>

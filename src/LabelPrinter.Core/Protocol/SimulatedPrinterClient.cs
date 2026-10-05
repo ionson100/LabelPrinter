@@ -79,15 +79,29 @@ namespace LabelPrinter.Core.Protocol
             lock (_gate) return Task.FromResult(_printEnabled);
         }
 
-        public Task SendLabelAsync(string formatName, string variableName, string value, CancellationToken ct)
+        public Task SendLabelAsync(string formatName,
+                                   IReadOnlyList<KeyValuePair<string, string>> variables,
+                                   CancellationToken ct)
         {
+            // Первой переменной движок всегда кладёт меняющееся значение (код),
+            // остальные — постоянные поля этикетки.
+            string code = null;
+            if (variables != null && variables.Count > 0) code = variables[0].Value;
+
             lock (_gate)
             {
-                _armedCode = value;
-                _lastCode = value;
+                _armedCode = code;
+                _lastCode = code;
             }
+
             StartTimer();
-            Log.Info("[" + _name + "] код передан в принтер: " + Codes.CodeFactory.ToHumanReadable(value));
+
+            if (code != null)
+            {
+                Log.Info("[" + _name + "] код передан в принтер: " + Codes.CodeFactory.ToHumanReadable(code) +
+                         (variables.Count > 1 ? " (полей на этикетке: " + variables.Count + ")" : ""));
+            }
+
             return Task.CompletedTask;
         }
 

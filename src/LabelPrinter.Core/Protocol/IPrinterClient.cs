@@ -43,10 +43,16 @@ namespace LabelPrinter.Core.Protocol
         Task<bool> GetPrintReadyAsync(CancellationToken ct);
 
         /// <summary>
-        /// Загружает формат с очередным кодом и переводит принтер в состояние готов.
-        /// Это SET_PRINTING_FORMAT + SET_PRINTING_STATUS.
+        /// Загружает формат с набором значений переменных и переводит принтер
+        /// в состояние готов.
+        ///
+        /// Это SET_PRINTING_FORMAT + SET_PRINTING_STATUS. Набор переменных
+        /// передаётся каждый раз: часть полей одинакова на всём тираже, часть
+        /// (серийный номер) меняется в каждой этикетке. Порядок сохраняется.
         /// </summary>
-        Task SendLabelAsync(string formatName, string variableName, string value, CancellationToken ct);
+        Task SendLabelAsync(string formatName,
+                            IReadOnlyList<KeyValuePair<string, string>> variables,
+                            CancellationToken ct);
 
         /// <summary>true — печать (PRINT), false — пауза (PAUSE).</summary>
         Task SetPrintStatusAsync(bool printing, CancellationToken ct);

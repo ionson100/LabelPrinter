@@ -45,6 +45,8 @@ namespace LabelPrinter.SmokeTest
                 AplinkResponseTests();
                 CommandTests();
                 FramingTests();
+                FixedVariablesCommandTests();
+                Await(FixedVariablesFlowTests());
                 Await(WireFormatTests());
                 SettingsDefaultsTests();
                 Await(DbAndBufferTests());
@@ -493,6 +495,223 @@ namespace LabelPrinter.SmokeTest
         // ------------------------------------------------------------------
 
         /// <summary>
+        /// <summary>
+        /// Постоянные поля в команде SET_PRINTING_FORMAT: по протоколу APLINK
+        /// значения уходят в каждой этикетке, а не хранятся в принтере.
+        /// </summary>
+        private static void FixedVariablesCommandTests()
+        {
+            Console.WriteLine("Постоянные поля этикетки в команде");
+
+            var vars = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("code", "010234567898765421aK7xQ2&#x1D;93udtI".Replace("&#x1D;", CodeFactory.GroupSeparator.ToString())),
+                new KeyValuePair<string, string>("91",  "PART-000123"),
+                new KeyValuePair<string, string>("92",  "2500"),
+                new KeyValuePair<string, string>("11",  "251015")
+            };
+
+            string cmd = Commands.SetPrintingFormat("demo", vars);
+
+            Check("четыре тега VARIABLE", CountOf(cmd, "<VARIABLE ") == 4, CountOf(cmd, "<VARIABLE ").ToString());
+            Check("поле code на месте", cmd.Contains("Name=\"code\""), cmd);
+            Check("поле 91 на месте", cmd.Contains("Name=\"91\"") && cmd.Contains("Value=\"PART-000123\""), cmd);
+            Check("поле 92 на месте", cmd.Contains("Name=\"92\"") && cmd.Contains("Value=\"2500\""), cmd);
+            Check("поле 11 на месте", cmd.Contains("Name=\"11\"") && cmd.Contains("Value=\"251015\""), cmd);
+            Check("один <PROTOCOL>", CountOf(cmd, "<PROTOCOL>") == 1);
+            Check("один </SET_PRINTING_FORMAT>", CountOf(cmd, "</SET_PRINTING_FORMAT>") == 1);
+            Check("код идёт первым", cmd.IndexOf("Name=\"code\"") < cmd.IndexOf("Name=\"91\""), "порядок нарушен");
+
+            // Порядок словаря сохраняется.
+            Check("порядок 91 → 92 → 11",
+                cmd.IndexOf("Name=\"91\"") < cmd.IndexOf("Name=\"92\"") && cmd.IndexOf("Name=\"92\"") < cmd.IndexOf("Name=\"11\""),
+                "порядок нарушен");
+
+            // Режим сущности для разделителя групп работает и с несколькими полями.
+            string entity = Commands.SetPrintingFormat("demo", vars, false, true);
+            Check("режим сущности: &amp;#x1D; ровно один", CountOf(entity, "&#x1D;") == 1, CountOf(entity, "&#x1D;").ToString());
+            Check("режим сущности: сырого 0x1D нет", entity.IndexOf(CodeFactory.GroupSeparator) < 0);
+            Check("постоянные поля не тронуты сущностью", entity.Contains("Value=\"PART-000123\""), entity);
+
+            // Протокольный слой пропускает только null/пустое имя: он честно
+            // передаёт то, что ему дали. Смысловую отсечку пробелов делает движок.
+            var withEmpty = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("code", "X"),
+                new KeyValuePair<string, string>("92", ""),
+                new KeyValuePair<string, string>("", "мусор")
+            };
+            string emptyCmd = Commands.SetPrintingFormat("demo", withEmpty);
+            Check("поле с пустым именем пропущено", !emptyCmd.Contains("Name=\"\""), emptyCmd);
+            Check("два тега VARIABLE осталось", CountOf(emptyCmd, "<VARIABLE ") == 2,
+                  CountOf(emptyCmd, "<VARIABLE ").ToString());
+            Check("пустое значение отправлено как пустое", emptyCmd.Contains("Name=\"92\" Value=\"\""), emptyCmd);
+
+            // Обёртка на одно значение осталась и даёт тот же результат.
+            string single = Commands.SetPrintingFormat("demo", "code", "X");
+            Check("обёртка на одно поле работает", CountOf(single, "<VARIABLE ") == 1, single);
+        }
+
+        /// <summary>
+        /// Сквозная проверка: движок получает постоянные поля один раз,
+        /// а в принтер уходят они в каждой этикетке вместе с меняющимся кодом.
+        /// </summary>
+        private static async Task FixedVariablesFlowTests()
+        {
+            Console.WriteLine("Постоянные поля в конвейере печати");
+
+            var runtimeSettings = new PrintRuntimeSettings
+            {
+                PollIntervalMs = 100,
+                BufferSize = 100,
+                BufferRefillThreshold = 10,
+                TestPrintIntervalSeconds = 1
+            };
+
+            var codeFormat = new CodeFormatSettings();
+            var ct = CancellationToken.None;
+
+            using (var engine = new PrintEngine(runtimeSettings, codeFormat))
+            {
+                Check("изначально постоянных полей нет", engine.FixedVariables.Count == 0,
+                      engine.FixedVariables.Count.ToString());
+
+                // Словарь задаётся один раз перед печатью.
+                engine.SetFixedVariables(new Dictionary<string, string>
+                {
+                    { "91", "PART-000123" },
+                    { "92", "2500" }
+                });
+
+                Check("поля сохранены", engine.FixedVariables.Count == 2,
+                      engine.FixedVariables.Count.ToString());
+                Check("порядок полей сохранён", engine.FixedVariables[0].Key == "91",
+                      engine.FixedVariables[0].Key);
+                Check("значение сохранено", engine.FixedVariables[0].Value == "PART-000123",
+                      engine.FixedVariables[0].Value);
+
+                var fake = new FakePrinterClient();
+                var source = new InMemoryCodeSource(50, codeFormat);
+                var printer = new PrinterSettings("Принтер 1", "localhost", 4100)
+                {
+                    FormatName = "demo",
+                    VariableName = "code",
+                    Enabled = true
+                };
+
+                var printerRuntime = new PrinterRuntime(printer, fake, source, runtimeSettings, codeFormat,
+                                                        () => engine.FixedVariables);
+                printerRuntime.Start();
+
+                for (int i = 0; i < 50 && !printerRuntime.IsConnected; i++)
+                {
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
+
+                await printerRuntime.StartPrintingAsync(ct).ConfigureAwait(false);
+
+                Check("в принтер ушли три поля", fake.Variables.Count > 0 && fake.Variables[0].Count == 3,
+                      fake.Variables.Count > 0 ? fake.Variables[0].Count.ToString() : "ничего не отправлено");
+
+                if (fake.Variables.Count > 0)
+                {
+                    var first = fake.Variables[0];
+                    Check("первым идёт код", first[0].Key == "code", first[0].Key);
+                    Check("затем 91", first[1].Key == "91", first[1].Key);
+                    Check("затем 92", first[2].Key == "92", first[2].Key);
+                    Check("значение 92 дошло", first[2].Value == "2500", first[2].Value);
+                }
+
+                // Пусть напечатаются две этикетки — поля должны уйти с каждой.
+                fake.Printed = 1;
+                for (int i = 0; i < 50 && printerRuntime.PrintedThisSession < 1; i++)
+                {
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
+                fake.Printed = 2;
+                for (int i = 0; i < 50 && printerRuntime.PrintedThisSession < 2; i++)
+                {
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
+
+                Check("после двух этикеток отправлено три набора", fake.Variables.Count >= 3,
+                      fake.Variables.Count.ToString());
+                Check("постоянные поля ушли в каждой этикетке",
+                    fake.Variables.Count >= 3 && fake.Variables.All(v => v.Count == 3 && v[1].Key == "91"),
+                    "пропущено в одной из этикеток");
+
+                await printerRuntime.StopPrintingAsync(ct).ConfigureAwait(false);
+                await printerRuntime.StopAsync().ConfigureAwait(false);
+                printerRuntime.Dispose();
+            }
+
+            // Столкновение имён: постоянное поле не должно затирать код.
+            using (var engine2 = new PrintEngine(runtimeSettings, codeFormat))
+            {
+                engine2.SetFixedVariables(new Dictionary<string, string>
+                {
+                    { "code", "ЗАТИРАЕТ" },
+                    { "91",  "PART-000123" }
+                });
+
+                var fake = new FakePrinterClient();
+                var source = new InMemoryCodeSource(10, codeFormat);
+                var printer = new PrinterSettings("Принтер 1", "localhost", 4100) { VariableName = "code" };
+                var runtime = new PrinterRuntime(printer, fake, source, runtimeSettings, codeFormat,
+                                                 () => engine2.FixedVariables);
+                runtime.Start();
+
+                for (int i = 0; i < 50 && !runtime.IsConnected; i++)
+                {
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
+                await runtime.StartPrintingAsync(ct).ConfigureAwait(false);
+
+                Check("поле с тем же именем отброшено",
+                    fake.Variables.Count > 0 && fake.Variables[0].Count == 2,
+                    fake.Variables.Count > 0 ? fake.Variables[0].Count.ToString() : "ничего");
+                Check("код не затёрт постоянным полем",
+                    fake.Variables.Count > 0 && fake.Variables[0][0].Value != "ЗАТИРАЕТ",
+                    fake.Variables.Count > 0 ? fake.Variables[0][0].Value : "");
+
+                await runtime.StopPrintingAsync(ct).ConfigureAwait(false);
+                await runtime.StopAsync().ConfigureAwait(false);
+                runtime.Dispose();
+            }
+
+            // Очистка полей.
+            using (var engine3 = new PrintEngine(runtimeSettings, codeFormat))
+            {
+                engine3.SetFixedVariables(new Dictionary<string, string> { { "91", "X" } });
+                Check("поле добавлено", engine3.FixedVariables.Count == 1);
+                engine3.ClearFixedVariables();
+                Check("поля очищены", engine3.FixedVariables.Count == 0,
+                      engine3.FixedVariables.Count.ToString());
+            }
+
+            // Смысловая отсечка: имя из одних пробелов — не поле.
+            using (var engine4 = new PrintEngine(runtimeSettings, codeFormat))
+            {
+                engine4.SetFixedVariables(new Dictionary<string, string>
+                {
+                    { "  ",  "мусор" },
+                    { "",    "мусор2" },
+                    { " 91 ", "PART-000123" }
+                });
+
+                Check("пробельные имена отброшены", engine4.FixedVariables.Count == 1,
+                      engine4.FixedVariables.Count.ToString());
+                Check("имя обрезано", engine4.FixedVariables.Count == 1 && engine4.FixedVariables[0].Key == "91",
+                      engine4.FixedVariables.Count > 0 ? engine4.FixedVariables[0].Key : "");
+
+                engine4.SetFixedVariables(new Dictionary<string, string> { { "92", null } });
+                Check("пустое значение не роняет", engine4.FixedVariables.Count == 1,
+                      engine4.FixedVariables.Count.ToString());
+                Check("null превращён в пустую строку",
+                      engine4.FixedVariables[0].Value == string.Empty,
+                      engine4.FixedVariables[0].Value ?? "null");
+            }
+        }
         /// Проверка байтов, которые реально уходят в сокет: разделитель групп 0x1D
         /// обязан дойти до принтера байтом, а не текстом «&lt;gr&gt;».
         /// Поднимаем приёмник на loopback и читаем, что он получил.
@@ -697,7 +916,7 @@ namespace LabelPrinter.SmokeTest
                 var first = fake.SentValues[0];
                 Check("в принтер ушла полная строка кода",
                     fake.FormatNames.All(x => x == "demo") &&
-                    fake.VarNames.All(x => x == "code"), "demo/code");
+                    fake.Variables.All(v => v.Count > 0 && v[0].Key == "code"), "первой должна идти переменная с кодом");
 
                 await runtime.StopPrintingAsync(ct).ConfigureAwait(false);
                 await runtime.StopAsync().ConfigureAwait(false);
@@ -776,7 +995,7 @@ namespace LabelPrinter.SmokeTest
             public int CounterQueries;
             public List<string> SentValues = new List<string>();
             public List<string> FormatNames = new List<string>();
-            public List<string> VarNames = new List<string>();
+            public List<List<KeyValuePair<string, string>>> Variables = new List<List<KeyValuePair<string, string>>>();
 
             public string Name { get { return "Fake"; } }
             public bool IsConnected { get; private set; }
@@ -803,13 +1022,16 @@ namespace LabelPrinter.SmokeTest
 
             public Task<bool> GetPrintReadyAsync(CancellationToken ct) { return Task.FromResult(true); }
 
-            public Task SendLabelAsync(string formatName, string variableName, string value, CancellationToken ct)
+            public Task SendLabelAsync(string formatName,
+                                        IReadOnlyList<KeyValuePair<string, string>> variables,
+                                        CancellationToken ct)
             {
                 lock (SentValues)
                 {
                     FormatNames.Add(formatName);
-                    VarNames.Add(variableName);
-                    SentValues.Add(value);
+                    var copy = new List<KeyValuePair<string, string>>(variables);
+                    Variables.Add(copy);
+                    if (copy.Count > 0) SentValues.Add(copy[0].Value);
                 }
                 return Task.CompletedTask;
             }

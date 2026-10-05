@@ -21,6 +21,11 @@ namespace LabelPrinter
 
             AppPaths.EnsureCreated();
 
+            // Журнал библиотеки по умолчанию молчит — приёмник подставляет
+            // приложение. Без этой строки записи шли бы только в окно,
+            // а на диск не попадали бы.
+            Log.Sink = new FileLogSink(AppPaths.LogDir);
+
             DispatcherUnhandledException += OnUnhandledException;
 
             Log.Info("Запуск LabelPrinter. Рабочие файлы: " + AppPaths.Root);

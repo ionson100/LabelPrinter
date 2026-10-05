@@ -85,26 +85,60 @@ namespace LabelPrinter.Core.Protocol
 
         /// <summary>
         /// SET_PRINTING_FORMAT — ключевая команда: загружает этикетку, подставляет
-        /// значение в переменную и ставит задание в печать.
+        /// значения в её переменные и ставит задание в печать.
+        ///
+        /// Передаётся сразу несколько переменных: часть полей этикетки одинакова
+        /// на всём тираже (дата, вес, GLEI), часть меняется в каждой строке
+        /// (например серийный номер). Порядок переменных сохраняется — принтер
+        /// различает их по имени, но для человека порядок в журнале важен.
         ///
         /// useCache=true применим только если формат уже один раз отправлялся принтеру
         /// вручную, иначе принтер вернёт ошибку — поэтому по умолчанию выключен.
         ///
-        /// groupSeparatorAsEntity: значение переменной может содержать разделитель
-        /// групп 0x1D. Формально XML 1.0 не допускает такой символ в атрибуте,
-        /// поэтому есть два режима: сырой байт (по умолчанию) и числовая сущность
-        /// &amp;#x1D; для строгих парсеров.
+        /// groupSeparatorAsEntity: значение может содержать разделитель групп 0x1D.
+        /// Формально XML 1.0 не допускает такой символ в атрибуте, поэтому есть два
+        /// режима: сырой байт (по умолчанию) и числовая сущность &amp;#x1D;.
+        /// </summary>
+        public static string SetPrintingFormat(string formatName,
+                                               IEnumerable<KeyValuePair<string, string>> variables,
+                                               bool useCache = false,
+                                               bool groupSeparatorAsEntity = false)
+        {
+            var cache = useCache ? " useCache=\"True\"" : string.Empty;
+
+            var sb = new StringBuilder();
+            sb.Append("<PROTOCOL>").Append(Environment.NewLine);
+            sb.Append("  <SET_PRINTING_FORMAT Format=\"").Append(Escape(formatName))
+              .Append("\" Quantity=\"1\"").Append(cache).Append(">").Append(Environment.NewLine);
+
+            if (variables != null)
+            {
+                foreach (var variable in variables)
+                {
+                    if (string.IsNullOrEmpty(variable.Key)) continue;
+
+                    sb.Append("    <VARIABLE Name=\"").Append(Escape(variable.Key))
+                      .Append("\" Value=\"").Append(EscapeValue(variable.Value, groupSeparatorAsEntity))
+                      .Append("\" />").Append(Environment.NewLine);
+                }
+            }
+
+            sb.Append("  </SET_PRINTING_FORMAT>").Append(Environment.NewLine);
+            sb.Append("</PROTOCOL>");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Удобная обёртка для одного значения переменной.
         /// </summary>
         public static string SetPrintingFormat(string formatName, string variableName, string value,
                                                bool useCache = false, bool groupSeparatorAsEntity = false)
         {
-            var cache = useCache ? " useCache=\"True\"" : string.Empty;
-
-            return "<PROTOCOL>" + Environment.NewLine
-                 + "  <SET_PRINTING_FORMAT Format=\"" + Escape(formatName) + "\" Quantity=\"1\"" + cache + ">" + Environment.NewLine
-                 + "    <VARIABLE Name=\"" + Escape(variableName) + "\" Value=\"" + EscapeValue(value, groupSeparatorAsEntity) + "\" />" + Environment.NewLine
-                 + "  </SET_PRINTING_FORMAT>" + Environment.NewLine
-                 + "</PROTOCOL>";
+            return SetPrintingFormat(
+                formatName,
+                new[] { new KeyValuePair<string, string>(variableName, value) },
+                useCache,
+                groupSeparatorAsEntity);
         }
 
         /// <summary>PRINT (Yes) или PAUSE (No).</summary>

@@ -49,10 +49,22 @@ namespace LabelPrinter.Core.Sample
 
             using (var engine = new PrintEngine(runtimeSettings, codeFormat))
             {
-                // 1. Откуда берём коды — единственное, что нужно решить приложению.
+                // 2. Постоянные поля этикетки — одинаковые на весь тираж.
+                //    В маркировке по «Честному знаку» это, например, номер партии,
+                //    масса нетто и дата: меняется только серийный номер.
+                //
+                //    Задаются один раз, но по протоколу APLINK значения уходят
+                //    в каждой этикетке — принтер не хранит их между этикетками.
+                engine.SetFixedVariables(new Dictionary<string, string>
+                {
+                    { "91", "PART-000123" },   // номер партии
+                    { "92", "2500"         }  // масса нетто
+                });
+
+                // 3. Откуда берём коды — единственное, что решаете вы.
                 engine.CodeSource = new SequenceCodeSource();
 
-                // 2. Какие принтеры обслуживать.
+                // 4. Какие принтеры обслуживать.
                 engine.Printers.Add(new PrinterSettings("Принтер 1", host, port)
                 {
                     FormatName = format,

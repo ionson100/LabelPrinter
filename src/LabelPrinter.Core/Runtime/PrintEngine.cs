@@ -61,6 +61,92 @@ namespace LabelPrinter.Core.Runtime
             Metrics = new PrintMetrics();
         }
 
+        /// <summary>Постоянные поля этикетки. Значения уходят в каждой этикетке.</summary>
+        private IReadOnlyList<KeyValuePair<string, string>> _fixedVariables =
+            new KeyValuePair<string, string>[0];
+
+        /// <summary>
+        /// Задаёт значения полей этикетки, одинаковые на всём тираже.
+        ///
+        /// Типичный случай — маркировка по «Честному знаку», где в коде много
+        /// элементов и меняется только серийный номер, а дата, вес, GLEI и прочее
+        /// одинаковы для всей партии:
+        ///
+        /// <code>
+        /// engine.SetFixedVariables(new Dictionary&lt;string, string&gt;
+        /// {
+        ///     { "91",  "..."  },   // номер партии
+        ///     { "92",  "..."  },   // внутренний номер
+        ///     { "31nn", "2500" },  // масса нетто
+        /// });
+        /// </code>
+        ///
+        /// Про «задать один раз» стоит понимать верно. Метод вызывают один раз
+        /// перед печатью, но по протоколу APLINK значения уходят в каждой
+        /// SET_PRINTING_FORMAT: принтер не хранит их между этикетками. Спрятать
+        /// их в принтере штатного способа нет — useCache кэширует макет, а не
+        /// значения, а SET_VARIABLE_BATCH грузит список значений заранее и
+        /// требует паузы принтера.
+        ///
+        /// Словарь копируется, поэтому вызывающий может освободить свой. Порядок
+        /// сохраняется. Поле с тем же именем, что и переменная с кодом,
+        /// игнорируется: иначе все этикетки получили бы одинаковый серийник.
+        ///
+        /// Метод можно вызывать и во время печати — изменение применится со
+        /// следующей этикетки (например, чтобы сменить вес на новой паллете).
+        /// </summary>
+        /// <param name="values">Имя поля в шаблоне → его значение.</param>
+        public void SetFixedVariables(IDictionary<string, string> values)
+        {
+            if (values == null || values.Count == 0)
+            {
+                _fixedVariables = new KeyValuePair<string, string>[0];
+                Log.Info("Постоянные поля этикетки очищены.");
+                return;
+            }
+
+            var copy = new List<KeyValuePair<string, string>>(values.Count);
+            foreach (var pair in values)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key)) continue;
+
+                // Пустое значение принтер принимает не всегда, а пустая дата или
+                // количество приводят к битой этикетке — предупреждаем.
+                if (pair.Value == null)
+                {
+                    Log.Warn("Постоянное поле «" + pair.Key + "» имеет пустое значение — " +
+                             "проверьте, так ли это задумано.");
+                }
+
+                copy.Add(new KeyValuePair<string, string>(pair.Key.Trim(), pair.Value ?? string.Empty));
+            }
+
+            _fixedVariables = copy.ToArray();
+
+            var names = new List<string>(copy.Count);
+            foreach (var field in copy) names.Add(field.Key);
+
+            Log.Info("Постоянные поля этикетки (" + copy.Count + "): " + string.Join(", ", names) +
+                     ". Значения будут передаваться в каждой этикетке.");
+        }
+
+        /// <summary>Убирает постоянные поля: останется только переменная с кодом.</summary>
+        public void ClearFixedVariables()
+        {
+            SetFixedVariables(null);
+        }
+
+        /// <summary>Текущий набор постоянных полей.</summary>
+        public IReadOnlyList<KeyValuePair<string, string>> FixedVariables
+        {
+            get { return _fixedVariables; }
+        }
+
+        private IReadOnlyList<KeyValuePair<string, string>> GetFixedVariables()
+        {
+            return _fixedVariables;
+        }
+
         public PrintRuntimeSettings Runtime { get; private set; }
 
         public CodeFormatSettings CodeFormat { get; private set; }
@@ -125,7 +211,7 @@ namespace LabelPrinter.Core.Runtime
                     ? (IPrinterClient)new SimulatedPrinterClient(printer.Name, Runtime.TestPrintIntervalSeconds)
                     : new RealPrinterClient(printer, Runtime.PrinterTimeoutMs, CodeFormat.GroupSeparatorAsEntity);
 
-                var runtime = new PrinterRuntime(printer, client, CodeSource, Runtime, CodeFormat);
+                var runtime = new PrinterRuntime(printer, client, CodeSource, Runtime, CodeFormat, GetFixedVariables);
                 created.Add(runtime);
                 runtime.Start();
 
