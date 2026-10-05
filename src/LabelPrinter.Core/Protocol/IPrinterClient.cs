@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace LabelPrinter.Protocol
+namespace LabelPrinter.Core.Protocol
 {
     public enum PrinterLinkState
     {

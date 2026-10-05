@@ -31,6 +31,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      Работа с принтером вынесена в отдельную библиотеку без внешних зависимостей.
+      Приложение добавляет к ней своё: PostgreSQL и Redis.
+    -->
+    <ProjectReference Include="..\LabelPrinter.Core\LabelPrinter.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="System.Configuration" />
     <Reference Include="System.Management" />
   </ItemGroup>

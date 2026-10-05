@@ -1,11 +1,14 @@
-using System;
+﻿using System;
 using System.Collections.ObjectModel;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using LabelPrinter.Codes;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Codes;
+using LabelPrinter.Core.Diagnostics;
 using LabelPrinter.Services;
+using LabelPrinter.Configuration;
+using LabelPrinter.Core.Runtime;
+using LabelPrinter.Infrastructure;
 
 namespace LabelPrinter.ViewModels
 {
@@ -51,7 +54,7 @@ namespace LabelPrinter.ViewModels
             _initialCodeCount = settings.InitialCodeCount;
 
             Printers = new ObservableCollection<PrinterRuntime>();
-            _printService.RuntimesChanged += OnRuntimesChanged;
+            _printService.StateChanged += OnRuntimesChanged;
 
             PrintCommand = new RelayCommand(async () => await TogglePrintingAsync(), () => !IsBusy);
             PrintersCommand = new RelayCommand(OpenPrintersWindow);
@@ -254,7 +257,7 @@ namespace LabelPrinter.ViewModels
         {
             try
             {
-                var code = CodeFactory.Build(_printService.Settings);
+                var code = CodeFactory.Build(_printService.Settings.CodeFormat);
                 CodeSample = CodeFactory.ToHumanReadable(code);
             }
             catch
@@ -456,7 +459,7 @@ namespace LabelPrinter.ViewModels
                     {
                         MetricBuffer = metrics.TotalBufferCount;
                         MetricFree = metrics.TotalFreeCodes;
-                        MetricIssued = metrics.TotalIssuedCodes;
+                        MetricIssued = _printService.IssuedCodes;
                         MetricPrinted = metrics.TotalPrintedThisSession;
                     });
                 }
@@ -496,7 +499,7 @@ namespace LabelPrinter.ViewModels
             _disposed = true;
 
             try { _cts.Cancel(); } catch { }
-            _printService.RuntimesChanged -= OnRuntimesChanged;
+            _printService.StateChanged -= OnRuntimesChanged;
         }
     }
 }

@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Windows.Input;
 
-namespace LabelPrinter.Core
+namespace LabelPrinter.Infrastructure
 {
     /// <summary>Простая реализация ICommand без внешних зависимостей.</summary>
     public sealed class RelayCommand : ICommand

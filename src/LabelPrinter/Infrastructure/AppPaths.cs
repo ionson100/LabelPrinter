@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.IO;
 
-namespace LabelPrinter.Core
+namespace LabelPrinter.Infrastructure
 {
     /// <summary>Рабочие пути приложения: настройки и журналы в %AppData%\LabelPrinter.</summary>
     public static class AppPaths

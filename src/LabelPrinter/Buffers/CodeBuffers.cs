@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
 using StackExchange.Redis;
 
 namespace LabelPrinter.Buffers

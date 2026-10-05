@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -7,10 +7,13 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using LabelPrinter.Buffers;
-using LabelPrinter.Codes;
-using LabelPrinter.Core;
+using LabelPrinter.Configuration;
+using LabelPrinter.Core.Abstractions;
+using LabelPrinter.Core.Codes;
+using LabelPrinter.Core.Configuration;
+using LabelPrinter.Core.Protocol;
+using LabelPrinter.Core.Runtime;
 using LabelPrinter.Data;
-using LabelPrinter.Protocol;
 using LabelPrinter.Services;
 
 namespace LabelPrinter.SmokeTest
@@ -88,7 +91,7 @@ namespace LabelPrinter.SmokeTest
 
             var settings = new AppSettings();
 
-            string code = CodeFactory.Build(settings);
+            string code = CodeFactory.Build(settings.CodeFormat);
             Console.WriteLine("  пример: " + Visible(code));
 
             Check("код не пуст", !string.IsNullOrEmpty(code));
@@ -116,7 +119,7 @@ namespace LabelPrinter.SmokeTest
             bool unique = true;
             for (int i = 0; i < 20000; i++)
             {
-                if (!seen.Add(CodeFactory.Build(settings))) { unique = false; break; }
+                if (!seen.Add(CodeFactory.Build(settings.CodeFormat))) { unique = false; break; }
             }
             Check("20000 кодов без повторов", unique, "найден дубль");
         }
@@ -132,7 +135,7 @@ namespace LabelPrinter.SmokeTest
             Console.WriteLine("Проверка GS1");
 
             var settings = new AppSettings();
-            string code = CodeFactory.Build(settings);
+            string code = CodeFactory.Build(settings.CodeFormat);
 
             string readable = CodeFactory.ToHumanReadable(code);
             Console.WriteLine("  разбор: " + readable);
@@ -250,7 +253,7 @@ namespace LabelPrinter.SmokeTest
             Check("триггер задан", trigger.Contains("<TRIGGER>photocell</TRIGGER>"), trigger);
 
             // ---- разделитель групп 0x1D в значении переменной ----
-            string sample = CodeFactory.Build(new AppSettings());
+            string sample = CodeFactory.Build(new CodeFormatSettings());
             const char gs = CodeFactory.GroupSeparator;
 
             string raw = Commands.SetPrintingFormat("demo", "code", sample, false, false);
@@ -315,12 +318,12 @@ namespace LabelPrinter.SmokeTest
             {
                 Console.WriteLine("  сервер: " + await repo.CheckAsync(ct));
 
-                var init = await repo.InitializeAsync(200, () => CodeFactory.Build(settings), ct);
+                var init = await repo.InitializeAsync(200, () => CodeFactory.Build(settings.CodeFormat), ct);
                 Console.WriteLine("  " + init.Summary);
                 Check("таблица создана или найдена", init.Total >= 200, init.Total.ToString());
 
                 // Повторный вызов не должен дублировать коды.
-                var again = await repo.InitializeAsync(200, () => CodeFactory.Build(settings), ct);
+                var again = await repo.InitializeAsync(200, () => CodeFactory.Build(settings.CodeFormat), ct);
                 Check("повторный запуск не добавляет коды", again.Inserted == 0, again.Inserted.ToString());
 
                 var claimed = await repo.ClaimAsync(30, ct);
@@ -358,7 +361,7 @@ namespace LabelPrinter.SmokeTest
             await buffer.ClearAsync(ct);
             Check("буфер пуст после очистки", (await buffer.CountAsync(ct)) == 0);
 
-            var batchCodes = Enumerable.Range(0, 50).Select(_ => CodeFactory.Build(settings)).ToList();
+            var batchCodes = Enumerable.Range(0, 50).Select(_ => CodeFactory.Build(settings.CodeFormat)).ToList();
             await buffer.PushAsync(batchCodes, ct);
             Check("в буфер легли 50 кодов", (await buffer.CountAsync(ct)) == 50);
 
@@ -391,7 +394,7 @@ namespace LabelPrinter.SmokeTest
                 BufferRefillThreshold = 10
             };
 
-            var printer = new Core.PrinterSettings
+            var printer = new PrinterSettings
             {
                 Name = "Тестовый принтер",
                 Host = "localhost",
@@ -403,7 +406,7 @@ namespace LabelPrinter.SmokeTest
 
             using (var repo = new CodesRepository(settings.ConnectionString))
             {
-                await repo.InitializeAsync(300, () => CodeFactory.Build(settings), CancellationToken.None);
+                await repo.InitializeAsync(300, () => CodeFactory.Build(settings.CodeFormat), CancellationToken.None);
 
                 var buffer = await CodeBufferFactory.CreateAsync(
                     settings.RedisConnectionString,
@@ -411,9 +414,9 @@ namespace LabelPrinter.SmokeTest
                     100,
                     CancellationToken.None);
 
-                var supply = new CodeSupply(repo, buffer, settings);
+                var source = new InMemoryCodeSource(300, settings.CodeFormat);
                 var client = new SimulatedPrinterClient("Тестовый принтер", 1);
-                var runtime = new PrinterRuntime(printer, client, supply, settings);
+                var runtime = new PrinterRuntime(printer, client, source, settings.Runtime, settings.CodeFormat);
 
                 runtime.Start();
 
@@ -541,7 +544,7 @@ namespace LabelPrinter.SmokeTest
                 }
             });
 
-            string code = CodeFactory.Build(new AppSettings());
+            string code = CodeFactory.Build(new CodeFormatSettings());
 
             using (var client = new AplinkClient())
             {
@@ -632,19 +635,19 @@ namespace LabelPrinter.SmokeTest
 
             using (var repo = new CodesRepository(settings.ConnectionString))
             {
-                await repo.InitializeAsync(300, () => CodeFactory.Build(settings), ct);
+                await repo.InitializeAsync(300, () => CodeFactory.Build(settings.CodeFormat), ct);
 
                 var buffer = await CodeBufferFactory.CreateAsync(
                     settings.RedisConnectionString,
                     "labelprinter:smoketest-base:" + Guid.NewGuid().ToString("N").Substring(0, 8),
                     100, ct);
 
-                var supply = new CodeSupply(repo, buffer, settings);
+                var source = new InMemoryCodeSource(300, settings.CodeFormat);
 
                 // Принтер «уже» напечатал 42 этикетки до старта программы.
                 var fake = new FakePrinterClient { Printed = 42 };
 
-                var printer = new Core.PrinterSettings
+                var printer = new PrinterSettings
                 {
                     Name = "Fake",
                     Host = "localhost",
@@ -654,7 +657,7 @@ namespace LabelPrinter.SmokeTest
                     VariableName = "code"
                 };
 
-                var runtime = new PrinterRuntime(printer, fake, supply, settings);
+                var runtime = new PrinterRuntime(printer, fake, source, settings.Runtime, settings.CodeFormat);
                 runtime.Start();
 
                 for (int i = 0; i < 50 && !runtime.IsConnected; i++) await Task.Delay(100).ConfigureAwait(false);
@@ -705,6 +708,65 @@ namespace LabelPrinter.SmokeTest
             }
 
             CodeBufferFactory.Shutdown();
+        }
+
+        /// <summary>
+        /// Источник кодов в памяти — проверяет сам движок, без базы и Redis.
+        /// Заодно показывает, как выглядит минимальная реализация ICodeSource
+        /// для своего приложения: очередь в памяти, пополнение из генератора.
+        /// </summary>
+        private sealed class InMemoryCodeSource : ICodeSource
+        {
+            private readonly Queue<string> _items = new Queue<string>();
+            private readonly CodeFormatSettings _format;
+            private readonly int _total;
+            private int _produced;
+
+            public InMemoryCodeSource(int total, CodeFormatSettings format)
+            {
+                _total = total;
+                _format = format ?? new CodeFormatSettings();
+            }
+
+            public int EnsuredCalls { get; private set; }
+
+            public Task<int> GetBufferCountAsync(CancellationToken cancellationToken)
+            {
+                return Task.FromResult(_items.Count);
+            }
+
+            public Task<int> EnsureBufferAsync(int capacity, int threshold, CancellationToken cancellationToken)
+            {
+                EnsuredCalls++;
+                if (_items.Count > threshold) return Task.FromResult(0);
+
+                int added = 0;
+                while (_items.Count < capacity && _produced < _total)
+                {
+                    _items.Enqueue(CodeFactory.Build(_format));
+                    _produced++;
+                    added++;
+                }
+                return Task.FromResult(added);
+            }
+
+            public Task<string> TakeAsync(CancellationToken cancellationToken)
+            {
+                return Task.FromResult(_items.Count > 0 ? _items.Dequeue() : null);
+            }
+
+            public Task<long> GetRemainingAsync(CancellationToken cancellationToken)
+            {
+                return Task.FromResult((long)Math.Max(0, _total - _produced));
+            }
+
+            public Task ClearAsync(CancellationToken cancellationToken)
+            {
+                _items.Clear();
+                return Task.CompletedTask;
+            }
+
+            public void Dispose() { _items.Clear(); }
         }
 
         /// <summary>Принтер-двойник: счётчик задаётся тестом вручную.</summary>

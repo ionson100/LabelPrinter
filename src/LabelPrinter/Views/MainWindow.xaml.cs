@@ -1,7 +1,7 @@
-using System;
+﻿using System;
 using System.Text;
 using System.Windows;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
 using LabelPrinter.ViewModels;
 
 namespace LabelPrinter.Views
@@ -15,7 +15,6 @@ namespace LabelPrinter.Views
     public partial class MainWindow : Window
     {
         private readonly MainViewModel _viewModel;
-        private readonly StringBuilder _pending = new StringBuilder();
         private bool _logHooked;
 
         public MainWindow()
@@ -75,15 +74,6 @@ namespace LabelPrinter.Views
 
             Log.Appended += OnLogAppended;
             _logHooked = true;
-
-            // История, накопленная до открытия окна.
-            var existing = Log.Snapshot();
-            if (existing.Count == 0) return;
-
-            var text = new StringBuilder();
-            foreach (var entry in existing) text.AppendLine(entry.Line);
-            LogBox.AppendText(text.ToString());
-            ScrollToEnd();
         }
 
         private void UnhookLog()
@@ -93,7 +83,7 @@ namespace LabelPrinter.Views
             _logHooked = false;
         }
 
-        private void OnLogAppended(object sender, LogEntry entry)
+        private void OnLogAppended(object sender, LogMessage entry)
         {
             // Журнал пишется из фоновых задач — в UI-поток попадаем через Dispatcher.
             if (Dispatcher.CheckAccess())
@@ -117,11 +107,6 @@ namespace LabelPrinter.Views
                 LogBox.Text = start >= 0 ? trimmed.Substring(start + 1) : trimmed;
             }
 
-            ScrollToEnd();
-        }
-
-        private void ScrollToEnd()
-        {
             LogBox.ScrollToEnd();
         }
 

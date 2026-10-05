@@ -1,9 +1,12 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 using Newtonsoft.Json;
+using LabelPrinter.Core.Configuration;
+using LabelPrinter.Core.Diagnostics;
+using LabelPrinter.Infrastructure;
 
-namespace LabelPrinter.Core
+namespace LabelPrinter.Configuration
 {
     /// <summary>Чтение и запись settings.json. Запись атомарная через временный файл.</summary>
     public static class SettingsService

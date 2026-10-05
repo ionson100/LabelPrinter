@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Библиотека общения с принтером APLINK (MRX72e / HRX).
+
+    Принципы, из-за которых проект выделен отдельно:
+      * НЕТ внешних пакетов — ни Npgsql, ни StackExchange.Redis, ни Newtonsoft.
+        DLL можно положить рядом с любым приложением, не создавая конфликтов
+        версий. Всё, что связано с БД и Redis, остаётся в приложении.
+      * НЕТ зависимости от WPF — только BCL. Поэтому библиотека годится и для
+        консоли, и для сервиса, и для Avalonia.
+      * Две целевые платформы: net48 для .NET Framework и netstandard2.0,
+        чтобы подключать из .NET Core 2.0+ / .NET 5-9 / MAUI / Avalonia.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net48;netstandard2.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>LabelPrinter.Core</RootNamespace>
+    <AssemblyName>LabelPrinter.Core</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <SignAssembly>false</SignAssembly>
+    <Product>Библиотека печати этикеток APLINK</Product>
+    <Description>
+      Обмен с принтерами APLINK (MRX72e / HRX) по XML-протоколу 2.24:
+      подключение, автопереподключение, выдача кодов, учёт напечатанных этикеток.
+    </Description>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <!-- На .NET Framework System.Net.Sockets лежит в BCL, всё в порядке. -->
+  </ItemGroup>
+
+</Project>

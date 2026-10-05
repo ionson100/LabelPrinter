@@ -1,9 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-namespace LabelPrinter.Protocol
+namespace LabelPrinter.Core.Protocol
 {
     /// <summary>
     /// Разбор ответа принтера APLINK.

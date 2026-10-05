@@ -1,4 +1,7 @@
-using System.Windows;
+﻿using System.Windows;
+using LabelPrinter.Configuration;
+using LabelPrinter.Core.Configuration;
+using LabelPrinter.ViewModels;
 
 namespace LabelPrinter.Views
 {
@@ -13,7 +16,7 @@ namespace LabelPrinter.Views
             InitializeComponent();
         }
 
-        public PrintersWindow(Core.AppSettings settings)
+        public PrintersWindow(Configuration.AppSettings settings)
             : this()
         {
             DataContext = new ViewModels.PrintersViewModel(settings);

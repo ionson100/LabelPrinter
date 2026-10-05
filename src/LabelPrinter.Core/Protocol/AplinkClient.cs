@@ -1,12 +1,12 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
 
-namespace LabelPrinter.Protocol
+namespace LabelPrinter.Core.Protocol
 {
     /// <summary>
     /// Транспорт протокола APLINK (XML Protocol Manual 2.24).

@@ -1,8 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
+using LabelPrinter.Configuration;
+using LabelPrinter.Core.Configuration;
+using LabelPrinter.Infrastructure;
 
 namespace LabelPrinter.ViewModels
 {

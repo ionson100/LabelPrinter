@@ -1,10 +1,12 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 using System.Windows.Media;
-using LabelPrinter.Protocol;
+using LabelPrinter.Core.Protocol;
 using LabelPrinter.Services;
+using LabelPrinter.Core.Runtime;
+using LabelPrinter.Core.Codes;
 
 namespace LabelPrinter.Converters
 {
@@ -122,7 +124,7 @@ namespace LabelPrinter.Converters
             if (value == null) return "—";
             var text = value.ToString();
             if (string.IsNullOrEmpty(text)) return "—";
-            return Codes.CodeFactory.ToHumanReadable(text);
+            return CodeFactory.ToHumanReadable(text);
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)

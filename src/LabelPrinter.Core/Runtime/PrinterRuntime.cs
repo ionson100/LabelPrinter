@@ -1,28 +1,35 @@
 using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using LabelPrinter.Codes;
-using LabelPrinter.Core;
-using LabelPrinter.Protocol;
+using LabelPrinter.Core.Abstractions;
+using LabelPrinter.Core.Codes;
+using LabelPrinter.Core.Configuration;
+using LabelPrinter.Core.Diagnostics;
+using LabelPrinter.Core.Protocol;
 
-namespace LabelPrinter.Services
+namespace LabelPrinter.Core.Runtime
 {
     /// <summary>
     /// Один принтер: подключение с автопереподключением, конвейер кодов и счётчики.
     ///
-    /// Рабочий цикл (по заданию):
-    ///  1. при старте печати спрашиваем у принтера количество напечатанных этикеток;
-    ///  2. берём код из буфера (Redis), а если буфер пуст или близок к концу —
-    ///     добираем его кодами из базы и помечаем их напечатанными;
+    /// Рабочий цикл:
+    ///  1. при старте печати спрашиваем у принтера количество напечатанных этикеток
+    ///     и запоминаем его как базу — не ноль, иначе счётчик, накопленный до
+    ///     запуска программы, попал бы в статистику сеанса;
+    ///  2. берём код из источника (буфер, а если он пуст или близок к концу —
+    ///     источник сам доливает его из своего хранилища);
     ///  3. отдаём код принтеру и переводим его в состояние готов;
     ///  4. принтер печатает по внешнему триггеру; когда счётчик напечатанных
     ///     вырос — берём следующий код.
+    ///
+    /// Счётчик принтера по условию эксплуатации только растёт, поэтому ветки
+    /// на уменьшение нет.
     /// </summary>
-    public sealed class PrinterRuntime : ObservableObject, IDisposable
+    public sealed class PrinterRuntime : ObservableObjectBase, IDisposable
     {
-        private readonly CodeSupply _supply;
-        private readonly AppSettings _settings;
+        private readonly ICodeSource _source;
+        private readonly PrintRuntimeSettings _settings;
+        private readonly CodeFormatSettings _codeFormat;
         private readonly IPrinterClient _client;
 
         private CancellationTokenSource _cts;
@@ -46,8 +53,6 @@ namespace LabelPrinter.Services
         private string _lastError;
 
         public PrinterSettings Printer { get; private set; }
-
-        public CodeSupply Supply { get { return _supply; } }
 
         public IPrinterClient Client { get { return _client; } }
 
@@ -93,6 +98,7 @@ namespace LabelPrinter.Services
             set { Set(ref _bufferCount, value); }
         }
 
+        /// <summary>Сколько кодов осталось в хранилище, по данным источника.</summary>
         public long FreeCodes
         {
             get { return _freeCodes; }
@@ -111,16 +117,25 @@ namespace LabelPrinter.Services
             private set { Set(ref _printing, value); }
         }
 
+        /// <summary>Сработало при изменении состояния — для перерисовки интерфейса.</summary>
         public event EventHandler StateChanged;
 
-        public PrinterRuntime(PrinterSettings printer, IPrinterClient client, CodeSupply supply, AppSettings settings)
+        public PrinterRuntime(PrinterSettings printer,
+                              IPrinterClient client,
+                              ICodeSource source,
+                              PrintRuntimeSettings settings,
+                              CodeFormatSettings codeFormat)
         {
             Printer = printer ?? throw new ArgumentNullException("printer");
             _client = client ?? throw new ArgumentNullException("client");
-            _supply = supply ?? throw new ArgumentNullException("supply");
+            _source = source ?? throw new ArgumentNullException("source");
             _settings = settings ?? throw new ArgumentNullException("settings");
+            _codeFormat = codeFormat ?? new CodeFormatSettings();
 
-            LinkText = "не подключён";
+            _settings.Normalize();
+            _codeFormat.Normalize();
+
+            _linkText = "не подключён";
         }
 
         // ------------------------------------------------------------------
@@ -161,17 +176,11 @@ namespace LabelPrinter.Services
 
             if (loop != null)
             {
-                try
-                {
-                    await Task.WhenAny(loop, Task.Delay(2000)).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // завершение не критично
-                }
+                try { await Task.WhenAny(loop, Task.Delay(2000)).ConfigureAwait(false); }
+                catch { }
             }
 
-            try { _client.Disconnect(); } catch { /* уже отключён */ }
+            try { _client.Disconnect(); } catch { }
             if (cts != null) cts.Dispose();
 
             SetConnected(false, "остановлен");
@@ -182,27 +191,26 @@ namespace LabelPrinter.Services
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Старт печати: узнаём у принтера текущее количество напечатанных этикеток
-        /// и заряжаем первый код.
+        /// Старт печати: узнаём у принтера текущее количество напечатанных
+        /// этикеток и заряжаем первый код.
         /// </summary>
-        public async Task StartPrintingAsync(CancellationToken ct)
+        public async Task StartPrintingAsync(CancellationToken cancellationToken)
         {
             if (!IsConnected)
             {
                 throw new InvalidOperationException("Принтер «" + Printer.Name + "» не подключён.");
             }
 
-            // Шаг 1 задания: спрашиваем количество напечатанных этикеток.
-            _baselinePrinted = await _client.GetPrintedCountAsync(ct).ConfigureAwait(false);
+            // Шаг 1: спрашиваем количество напечатанных этикеток и запоминаем базу.
+            _baselinePrinted = await _client.GetPrintedCountAsync(cancellationToken).ConfigureAwait(false);
             _baselineTaken = true;
 
             Log.Info("[" + Printer.Name + "] начало печати. Принтер сообщает " + _baselinePrinted +
                      " напечатанных этикеток (счётчик задания).");
 
-            // Триггер печати: по умолчанию внешний (фотодатчик).
             try
             {
-                await _client.SetTriggerAsync(_settings.TriggerMode, ct).ConfigureAwait(false);
+                await _client.SetTriggerAsync(_settings.TriggerMode, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -211,24 +219,24 @@ namespace LabelPrinter.Services
             }
 
             // Наполняем буфер до полной вместимости перед стартом.
-            await _supply.TopUpAsync(ct).ConfigureAwait(false);
+            await RefillAsync(cancellationToken).ConfigureAwait(false);
 
             PrintedThisSession = 0;
             IssuedThisSession = 0;
 
             _printing = true;
-            await ArmNextAsync(ct).ConfigureAwait(false);
+            await ArmNextAsync(cancellationToken).ConfigureAwait(false);
 
             Log.Success("[" + Printer.Name + "] печать запущена.");
         }
 
         /// <summary>Остановка печати: принтер уходит на паузу.</summary>
-        public async Task StopPrintingAsync(CancellationToken ct)
+        public async Task StopPrintingAsync(CancellationToken cancellationToken)
         {
             if (!_printing) return;
             _printing = false;
 
-            await TryPauseAsync(ct).ConfigureAwait(false);
+            await TryPauseAsync(cancellationToken).ConfigureAwait(false);
 
             if (!string.IsNullOrEmpty(ArmedCode))
             {
@@ -241,27 +249,31 @@ namespace LabelPrinter.Services
             Log.Info("[" + Printer.Name + "] печать остановлена. Итого напечатано: " + PrintedThisSession + ".");
         }
 
-        private async Task RunLoopAsync(CancellationToken ct)
-        {
-            int pollMs = Math.Max(100, _settings.PollIntervalMs);
-            int reconnectMs = Math.Max(1, _settings.ReconnectDelaySeconds) * 1000;
+        // ------------------------------------------------------------------
+        //  Основной цикл
+        // ------------------------------------------------------------------
 
-            while (!ct.IsCancellationRequested)
+        private async Task RunLoopAsync(CancellationToken cancellationToken)
+        {
+            int pollMs = _settings.PollIntervalMs;
+            int reconnectMs = _settings.ReconnectDelaySeconds * 1000;
+
+            while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
-                    if (!await EnsureConnectedAsync(ct).ConfigureAwait(false))
+                    if (!await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false))
                     {
-                        await DelayAsync(reconnectMs, ct).ConfigureAwait(false);
+                        await DelayAsync(reconnectMs, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
                     if (_printing)
                     {
-                        await PollCounterAsync(ct).ConfigureAwait(false);
+                        await PollCounterAsync(cancellationToken).ConfigureAwait(false);
                     }
 
-                    await DelayAsync(pollMs, ct).ConfigureAwait(false);
+                    await DelayAsync(pollMs, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -272,21 +284,14 @@ namespace LabelPrinter.Services
                     LastError = ex.Message;
                     Log.Error("[" + Printer.Name + "] сбой в рабочем цикле: " + ex.Message);
                     HandleLinkLoss();
-                    Raise();
 
-                    try
-                    {
-                        await DelayAsync(reconnectMs, ct).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
+                    try { await DelayAsync(reconnectMs, cancellationToken).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
                 }
             }
         }
 
-        private async Task<bool> EnsureConnectedAsync(CancellationToken ct)
+        private async Task<bool> EnsureConnectedAsync(CancellationToken cancellationToken)
         {
             if (_client.IsConnected) return true;
 
@@ -295,13 +300,13 @@ namespace LabelPrinter.Services
             try
             {
                 Log.Info("[" + Printer.Name + "] подключение к " + Printer.Endpoint + "…");
-                await _client.ConnectAsync(ct).ConfigureAwait(false);
+                await _client.ConnectAsync(cancellationToken).ConfigureAwait(false);
                 LastError = null;
                 SetConnected(true, "подключён");
 
                 try
                 {
-                    var description = await _client.DescribeAsync(ct).ConfigureAwait(false);
+                    var description = await _client.DescribeAsync(cancellationToken).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(description))
                     {
                         Log.Info("[" + Printer.Name + "] " + description + ".");
@@ -313,7 +318,7 @@ namespace LabelPrinter.Services
                 }
                 return true;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
@@ -321,8 +326,7 @@ namespace LabelPrinter.Services
             {
                 LastError = ex.Message;
                 SetConnected(false, "нет связи");
-                Log.Warn("[" + Printer.Name + "] не удалось подключиться к " + Printer.Endpoint +
-                         ": " + ex.Message);
+                Log.Warn("[" + Printer.Name + "] не удалось подключиться к " + Printer.Endpoint + ": " + ex.Message);
                 return false;
             }
         }
@@ -330,17 +334,10 @@ namespace LabelPrinter.Services
         /// <summary>
         /// Следит за счётчиком напечатанных этикеток. Рост счётчика означает, что
         /// внешний триггер сработал и этикетка напечатана — пора брать следующий код.
-        ///
-        /// Отсчёт ведётся от значения, снятого при старте печати (см. StartPrintingAsync),
-        /// а не от нуля: иначе счётчик, накопленный до старта программы, был бы учтён
-        /// как напечатанный в этом сеансе.
-        ///
-        /// Счётчик у принтера только растёт, поэтому ветки на уменьшение нет —
-        /// по условию эксплуатации такое состояние невозможно.
         /// </summary>
-        private async Task PollCounterAsync(CancellationToken ct)
+        private async Task PollCounterAsync(CancellationToken cancellationToken)
         {
-            long current = await _client.GetPrintedCountAsync(ct).ConfigureAwait(false);
+            long current = await _client.GetPrintedCountAsync(cancellationToken).ConfigureAwait(false);
 
             if (!_baselineTaken)
             {
@@ -369,49 +366,51 @@ namespace LabelPrinter.Services
 
                 if (_printing)
                 {
-                    await ArmNextAsync(ct).ConfigureAwait(false);
+                    await ArmNextAsync(cancellationToken).ConfigureAwait(false);
                 }
             }
         }
 
         /// <summary>Берёт код и передаёт принтеру, переводя его в состояние готов.</summary>
-        private async Task ArmNextAsync(CancellationToken ct)
+        private async Task ArmNextAsync(CancellationToken cancellationToken)
         {
             string code;
             try
             {
-                code = await _supply.TakeAsync(ct).ConfigureAwait(false);
-            }
-            catch (NoCodesAvailableException ex)
-            {
-                Log.Error("[" + Printer.Name + "] " + ex.Message);
-                await TryPauseAsync(ct).ConfigureAwait(false);
-                _printing = false;
-                Raise();
-                return;
+                code = await _source.TakeAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 Log.Error("[" + Printer.Name + "] не удалось взять код: " + ex.Message);
-                await TryPauseAsync(ct).ConfigureAwait(false);
+                await TryPauseAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(code))
+            {
+                Log.Error("[" + Printer.Name + "] коды закончились. Печать остановлена. " +
+                          "Наполните хранилище и нажмите «Печать» снова.");
+                await TryPauseAsync(cancellationToken).ConfigureAwait(false);
+                _printing = false;
+                Raise();
                 return;
             }
 
             try
             {
-                // Шаг 3 задания: код уходит в принтер, принтер переводится в «готов».
-                await _client.SendLabelAsync(Printer.FormatName, Printer.VariableName, code, ct).ConfigureAwait(false);
-                await _client.SetPrintStatusAsync(true, ct).ConfigureAwait(false);
+                await _client.SendLabelAsync(Printer.FormatName, Printer.VariableName, code, cancellationToken)
+                             .ConfigureAwait(false);
+                await _client.SetPrintStatusAsync(true, cancellationToken).ConfigureAwait(false);
 
                 ArmedCode = code;
                 IssuedThisSession++;
 
                 // Держим буфер «на подходе» — доливаем заранее, а не в момент печати.
-                await _supply.RefillIfNeededAsync(ct).ConfigureAwait(false);
+                await RefillAsync(cancellationToken).ConfigureAwait(false);
 
                 Raise();
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
@@ -424,11 +423,29 @@ namespace LabelPrinter.Services
             }
         }
 
-        private async Task TryPauseAsync(CancellationToken ct)
+        /// <summary>Просит источник долить буфер до полной вместимости.</summary>
+        private async Task RefillAsync(CancellationToken cancellationToken)
         {
             try
             {
-                await _client.SetPrintStatusAsync(false, ct).ConfigureAwait(false);
+                await _source.EnsureBufferAsync(_settings.BufferSize, _settings.BufferRefillThreshold, cancellationToken)
+                           .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("[" + Printer.Name + "] не удалось долить буфер: " + ex.Message);
+            }
+        }
+
+        private async Task TryPauseAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _client.SetPrintStatusAsync(false, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -438,14 +455,10 @@ namespace LabelPrinter.Services
 
         private void HandleLinkLoss()
         {
-            if (_client is RealPrinterClient real)
-            {
-                real.MarkLost();
-            }
-            else
-            {
-                _client.Disconnect();
-            }
+            var real = _client as RealPrinterClient;
+            if (real != null) real.MarkLost();
+            else _client.Disconnect();
+
             SetConnected(false, "потеряна связь, переподключение…");
         }
 
@@ -471,16 +484,10 @@ namespace LabelPrinter.Services
             Raise();
         }
 
-        private static async Task DelayAsync(int milliseconds, CancellationToken ct)
+        private static async Task DelayAsync(int milliseconds, CancellationToken cancellationToken)
         {
-            try
-            {
-                await Task.Delay(milliseconds, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // штатная остановка
-            }
+            try { await Task.Delay(milliseconds, cancellationToken).ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
         }
 
         public void Dispose()
@@ -488,11 +495,38 @@ namespace LabelPrinter.Services
             if (_disposed) return;
             _disposed = true;
 
-            try { _client.Dispose(); } catch { /* уже закрыт */ }
-            _supply.Dispose();
+            try { _client.Dispose(); } catch { }
 
             var cts = Interlocked.Exchange(ref _cts, null);
             if (cts != null) cts.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Минимальная база для наблюдаемых объектов внутри библиотеки.
+    /// Отдельный класс, чтобы приложение не было обязано подставлять свой
+    /// LabelPrinter.Infrastructure.ObservableObject.
+    /// </summary>
+    public abstract class ObservableObjectBase : System.ComponentModel.INotifyPropertyChanged
+    {
+        public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+
+        protected void Raise([System.Runtime.CompilerServices.CallerMemberName] string propertyName = null)
+        {
+            var handler = PropertyChanged;
+            if (handler != null)
+            {
+                handler(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+            }
+        }
+
+        protected bool Set<T>(ref T field, T value,
+                              [System.Runtime.CompilerServices.CallerMemberName] string propertyName = null)
+        {
+            if (System.Collections.Generic.EqualityComparer<T>.Default.Equals(field, value)) return false;
+            field = value;
+            Raise(propertyName);
+            return true;
         }
     }
 }

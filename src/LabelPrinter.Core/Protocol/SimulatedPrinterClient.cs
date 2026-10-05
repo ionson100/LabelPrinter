@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
 
-namespace LabelPrinter.Protocol
+namespace LabelPrinter.Core.Protocol
 {
     /// <summary>
     /// Принтер-симулятор для режима «Тестовый принтер».

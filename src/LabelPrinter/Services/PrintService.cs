@@ -1,52 +1,74 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using LabelPrinter.Buffers;
-using LabelPrinter.Codes;
-using LabelPrinter.Core;
+using LabelPrinter.Configuration;
+using LabelPrinter.Core.Codes;
+using LabelPrinter.Core.Diagnostics;
+using LabelPrinter.Core.Runtime;
 using LabelPrinter.Data;
-using LabelPrinter.Protocol;
 
 namespace LabelPrinter.Services
 {
-    /// <summary>Сводные показатели для строки состояния.</summary>
-    public sealed class PrintMetrics
-    {
-        public int TotalPrinters { get; set; }
-        public int ConnectedPrinters { get; set; }
-        public int ActivePrinters { get; set; }
-        public long TotalBufferCount { get; set; }
-        public long TotalFreeCodes { get; set; }
-        public long TotalIssuedCodes { get; set; }
-        public long TotalPrintedThisSession { get; set; }
-    }
-
     /// <summary>
-    /// Верхний уровень: база, буферы, список принтеров и общий пуск/стоп печати.
-    /// Кнопки «Печать» и «Отмена» управляют всеми принтерами сразу.
+    /// Слой приложения над <see cref="PrintEngine"/>.
+    ///
+    /// Движок ничего не знает про базу и Redis — здесь создаётся источник кодов,
+    /// наполняется таблица и реализуется кнопка «Очистить буфер».
+    /// Модель представления работает только с этим классом.
     /// </summary>
     public sealed class PrintService : IDisposable
     {
         private readonly AppSettings _settings;
         private readonly CodesRepository _repository;
-        private readonly List<PrinterRuntime> _runtimes = new List<PrinterRuntime>();
-        private readonly object _gate = new object();
 
-        private CancellationTokenSource _cts;
+        /// <summary>Текущий источник кодов. При пересборке движка заменяется.</summary>
+        private IDisposable _currentSource;
+
+        private CancellationTokenSource _metricsCts;
         private Task _metricsLoop;
-        private bool _disposed;
 
-        public event EventHandler RuntimesChanged;
+        private bool _disposed;
 
         public AppSettings Settings { get { return _settings; } }
 
         public CodesRepository Repository { get { return _repository; } }
 
-        public PrintMetrics Metrics { get; private set; }
+        public PrintEngine Engine { get; private set; }
 
-        public bool IsPrinting { get; private set; }
+        public PrintMetrics Metrics { get { return Engine == null ? new PrintMetrics() : Engine.Metrics; } }
+
+        /// <summary>
+        /// Состав принтеров изменился.
+        ///
+        /// Событие своё, а не переадресация в движок: движок создаётся позже,
+        /// и переадресация в момент подписки молча теряла бы подписчика.
+        /// </summary>
+        public event EventHandler StateChanged;
+
+        private void OnEngineStateChanged(object sender, EventArgs e)
+        {
+            var handler = StateChanged;
+            if (handler != null) handler(this, e);
+        }
+
+        public IReadOnlyList<PrinterRuntime> GetRuntimes()
+        {
+            return Engine == null ? new List<PrinterRuntime>() : Engine.Runtimes;
+        }
+
+        public bool IsPrinting { get { return Engine != null && Engine.IsPrinting; } }
+
+        /// <summary>
+        /// Сколько кодов помечено IsPrinted = true. Это показатель хранилища,
+        /// движок о нём не знает, поэтому он живёт здесь.
+        /// </summary>
+        public long IssuedCodes { get; private set; }
+
+        /// <summary>Сколько всего кодов в таблице.</summary>
+        public long TotalCodes { get; private set; }
 
         public PrintService(AppSettings settings)
         {
@@ -54,7 +76,6 @@ namespace LabelPrinter.Services
             _settings.Normalize();
 
             _repository = new CodesRepository(_settings.ConnectionString);
-            Metrics = new PrintMetrics();
         }
 
         // ------------------------------------------------------------------
@@ -65,14 +86,14 @@ namespace LabelPrinter.Services
         /// Проверяет и при необходимости создаёт таблицу Codes, затем наполняет её
         /// кодами. Вызывается один раз при старте.
         /// </summary>
-        public async Task<InitializationResult> InitializeDatabaseAsync(CancellationToken ct)
+        public async Task<InitializationResult> InitializeDatabaseAsync(CancellationToken cancellationToken)
         {
             Log.Info("PostgreSQL: проверка таблицы «" + CodesRepository.TableName + "».");
 
             var result = await _repository.InitializeAsync(
                 _settings.InitialCodeCount,
-                GenerateCode,
-                ct).ConfigureAwait(false);
+                () => CodeFactory.Build(_settings.CodeFormat),
+                cancellationToken).ConfigureAwait(false);
 
             if (result.Skipped)
             {
@@ -84,13 +105,13 @@ namespace LabelPrinter.Services
                 Log.Success("База готова. " + result.Summary);
             }
 
-            Log.Info("Генератор кодов: " + CodeFactory.Describe(_settings));
+            Log.Info("Генератор кодов: " + CodeFactory.Describe(_settings.CodeFormat));
 
-            var gtinProblem = CodeFactory.ValidateGtin14(_settings.Gtin14);
+            var gtinProblem = CodeFactory.ValidateGtin14(_settings.CodeFormat.Gtin14);
             if (gtinProblem != null)
             {
                 // Не мешаем работе, но обязаны сказать: сканер может отвергнуть такие коды.
-                Log.Warn("GTIN-14 «" + _settings.Gtin14 + "»: " + gtinProblem +
+                Log.Warn("GTIN-14 «" + _settings.CodeFormat.Gtin14 + "»: " + gtinProblem +
                          " Коды будут сформированы как есть, но часть сканеров их не примет.");
             }
 
@@ -127,198 +148,170 @@ namespace LabelPrinter.Services
             }
         }
 
-        private string GenerateCode()
-        {
-            return CodeFactory.Build(_settings);
-        }
-
         // ------------------------------------------------------------------
         //  Принтеры
         // ------------------------------------------------------------------
 
-        /// <summary>
-        /// Создаёт рабочие объекты для всех принтеров из настроек и запускает
-        /// фоновые циклы подключения.
-        /// </summary>
-        public async Task RebuildPrintersAsync(CancellationToken ct)
+        /// <summary>Создаёт источник кодов и запускает движок для всех принтеров.</summary>
+        public async Task RebuildPrintersAsync(CancellationToken cancellationToken)
         {
-            await ShutdownPrintersAsync().ConfigureAwait(false);
+            var engine = new PrintEngine(_settings.Runtime, _settings.CodeFormat);
 
-            var created = new List<PrinterRuntime>();
+            // Движок работает с одним источником на все принтеры: буфер общий,
+            // коды при этом не пересекаются, потому что выдача из базы помечает
+            // их IsPrinted = true в одной транзакции.
+            var buffer = await CodeBufferFactory.CreateAsync(
+                _settings.RedisConnectionString,
+                _settings.BufferKey("shared"),
+                _settings.Runtime.BufferSize,
+                cancellationToken).ConfigureAwait(false);
+
+            var source = new PostgresRedisCodeSource(_repository, buffer, _settings);
+            engine.CodeSource = source;
 
             foreach (var printer in _settings.Printers)
             {
-                var problem = printer.Validate();
-                if (problem != null)
+                engine.Printers.Add(printer);
+            }
+
+            var previous = Engine;
+            Engine = engine;
+
+            try
+            {
+                if (previous != null)
                 {
-                    Log.Error("Принтер «" + printer.Name + "» пропущен: " + problem);
-                    continue;
+                    previous.StateChanged -= OnEngineStateChanged;
+                    previous.Dispose();
                 }
 
-                IPrinterClient client = _settings.TestPrinterMode
-                    ? (IPrinterClient)new SimulatedPrinterClient(printer.Name, _settings.TestPrintIntervalSeconds)
-                    : new RealPrinterClient(printer, _settings.PrinterTimeoutMs, _settings.GroupSeparatorAsEntity);
-
-                var buffer = await CodeBufferFactory.CreateAsync(
-                    _settings.RedisConnectionString,
-                    _settings.BufferKey(printer.Id),
-                    _settings.BufferSize,
-                    ct).ConfigureAwait(false);
-
-                var supply = new CodeSupply(_repository, buffer, _settings);
-                var runtime = new PrinterRuntime(printer, client, supply, _settings);
-
-                created.Add(runtime);
-                runtime.Start();
-
-                Log.Info("Принтер «" + printer.Name + "» " + (printer.Enabled ? "активирован" : "выключен") +
-                         ": " + printer.Endpoint + ", формат «" + printer.FormatName + "», переменная «" +
-                         printer.VariableName + "».");
+                // Старый источник больше не нужен: его буфер закрыт, а новый
+                // открыт выше. Иначе на каждом «Применить» копился бы мусор.
+                var oldSource = Interlocked.Exchange(ref _currentSource, source);
+                if (oldSource != null)
+                {
+                    try { oldSource.Dispose(); } catch { }
+                }
             }
-
-            lock (_gate)
+            catch
             {
-                _runtimes.Clear();
-                _runtimes.AddRange(created);
+                // старое соединение могло не завершиться — это не мешает новому
+                _currentSource = source;
             }
 
-            if (created.Count == 0)
-            {
-                Log.Warn("Принтеров нет. Добавьте принтер кнопкой «Принтеры».");
-            }
+            engine.StateChanged += OnEngineStateChanged;
+
+            // StartAsync создаёт рабочие объекты принтеров и запускает циклы
+            // подключения; внутри он же обновляет показатели.
+            await engine.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            // Сообщаем ещё раз на случай, если интерфейс подписался позже.
+            OnEngineStateChanged(this, EventArgs.Empty);
 
             StartMetricsLoop();
-            await RefreshMetricsAsync(ct).ConfigureAwait(false);
-
-            EventHandler handler = RuntimesChanged;
-            if (handler != null) handler(this, EventArgs.Empty);
-        }
-
-        public IReadOnlyList<PrinterRuntime> GetRuntimes()
-        {
-            lock (_gate)
-            {
-                return _runtimes.ToList();
-            }
-        }
-
-        /// <summary>Принтеры, включённые галочкой «активировать».</summary>
-        public IReadOnlyList<PrinterRuntime> GetActiveRuntimes()
-        {
-            return GetRuntimes().Where(x => x.Printer.Enabled).ToList();
         }
 
         // ------------------------------------------------------------------
         //  Печать
         // ------------------------------------------------------------------
 
-        public bool CanStartPrinting()
+        public async Task StartPrintingAsync(CancellationToken cancellationToken)
         {
-            var active = GetActiveRuntimes();
-            return active.Count > 0 && active.All(x => x.IsConnected);
+            if (Engine == null) throw new InvalidOperationException("Принтеры не инициализированы.");
+            await Engine.StartPrintingAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        /// <summary>Кнопка «Печать» — общая для всех активных принтеров.</summary>
-        public async Task StartPrintingAsync(CancellationToken ct)
+        public async Task StopPrintingAsync(CancellationToken cancellationToken)
         {
-            if (IsPrinting) return;
+            if (Engine == null) return;
+            await Engine.StopPrintingAsync(cancellationToken).ConfigureAwait(false);
+        }
 
-            var active = GetActiveRuntimes();
-            if (active.Count == 0)
+        public async Task RefreshMetricsAsync(CancellationToken cancellationToken)
+        {
+            if (Engine != null)
             {
-                throw new InvalidOperationException("Нет активных принтеров. Включите хотя бы один в настройках.");
+                await Engine.RefreshMetricsAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await RefreshMetricsAsync(ct).ConfigureAwait(false);
-
-            IsPrinting = true;
-            var failures = new List<string>();
-
-            foreach (var runtime in active)
+            // Показатели хранилища — их движок не ведёт.
+            try
             {
-                try
-                {
-                    await runtime.StartPrintingAsync(ct).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    failures.Add(runtime.Printer.Name + ": " + ex.Message);
-                }
+                IssuedCodes = await _repository.GetIssuedAsync(cancellationToken).ConfigureAwait(false);
+                TotalCodes = await _repository.GetTotalAsync(cancellationToken).ConfigureAwait(false);
             }
-
-            if (failures.Count > 0)
+            catch
             {
-                Log.Error("Запуск печати с ошибками — " + string.Join("; ", failures));
-            }
-
-            if (active.Count == failures.Count)
-            {
-                IsPrinting = false;
-                throw new InvalidOperationException("Ни один принтер не запустился: " + string.Join("; ", failures));
+                // показатели не критичны
             }
         }
 
-        /// <summary>Кнопка «Отмена» — общая для всех принтеров.</summary>
-        public async Task StopPrintingAsync(CancellationToken ct)
+        /// <summary>
+        /// Периодическое обновление показателей хранилища.
+        /// Движок сам обновляет свои (буфер, напечатано, связь), а счётчики
+        /// таблицы «Codes» живут в приложении — их тоже нужно подтягивать,
+        /// иначе строка состояния показывала бы нули.
+        /// </summary>
+        private void StartMetricsLoop()
         {
-            if (!IsPrinting) return;
-            IsPrinting = false;
+            if (_metricsLoop != null) return;
 
-            foreach (var runtime in GetActiveRuntimes())
+            _metricsCts = new CancellationTokenSource();
+            var token = _metricsCts.Token;
+
+            _metricsLoop = Task.Run(async () =>
             {
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    await runtime.StopPrintingAsync(ct).ConfigureAwait(false);
+                    try { await RefreshMetricsAsync(token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
+                    catch { /* показатели не критичны */ }
+
+                    try { await Task.Delay(2000, token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
                 }
-                catch (Exception ex)
-                {
-                    Log.Error("[" + runtime.Printer.Name + "] ошибка остановки: " + ex.Message);
-                }
+            }, token);
+        }
+
+        private void StopMetricsLoop()
+        {
+            var cts = Interlocked.Exchange(ref _metricsCts, null);
+            var loop = Interlocked.Exchange(ref _metricsLoop, null);
+
+            if (cts != null) cts.Cancel();
+            if (loop != null)
+            {
+                try { Task.WhenAny(loop, Task.Delay(1000)).GetAwaiter().GetResult(); } catch { }
             }
+            if (cts != null) cts.Dispose();
         }
 
         // ------------------------------------------------------------------
         //  Буфер и база
         // ------------------------------------------------------------------
 
-        /// <summary>Кнопка «Показать размер буфера»: сколько в буфере и сколько свободно в базе.</summary>
-        public async Task<string> DescribeBuffersAsync(CancellationToken ct)
+        /// <summary>Кнопка «Показать размер буфера».</summary>
+        public async Task<string> DescribeBuffersAsync(CancellationToken cancellationToken)
         {
-            var lines = new List<string>();
+            if (Engine == null) return "Принтеры не инициализированы.";
 
-            foreach (var runtime in GetRuntimes())
-            {
-                int inBuffer = await runtime.Supply.BufferCountAsync(ct).ConfigureAwait(false);
-                lines.Add("  «" + runtime.Printer.Name + "» — в буфере " + inBuffer +
-                          " из " + _settings.BufferSize + " (" + runtime.Supply.Buffer.SourceName + ")");
-            }
+            var text = await Engine.DescribeBuffersAsync(cancellationToken).ConfigureAwait(false);
 
-            long total = await _repository.GetTotalAsync(ct).ConfigureAwait(false);
-            long free = await _repository.GetFreeAsync(ct).ConfigureAwait(false);
-            long issued = await _repository.GetIssuedAsync(ct).ConfigureAwait(false);
+            long total = await _repository.GetTotalAsync(cancellationToken).ConfigureAwait(false);
+            long issued = await _repository.GetIssuedAsync(cancellationToken).ConfigureAwait(false);
 
-            var text = new List<string>
-            {
-                "Размер буфера:",
-                string.Join(Environment.NewLine, lines),
-                "  В базе всего: " + total,
-                "  Свободно кодов в базе: " + free,
-                "  Выдано кодов (IsPrinted = true): " + issued,
-                "  Порог долива: " + _settings.BufferRefillThreshold
-            };
-
-            var result = string.Join(Environment.NewLine, text);
-            Log.Info(result);
-            return result;
+            return text + Environment.NewLine +
+                   "  В базе всего: " + total + Environment.NewLine +
+                   "  Выдано кодов (IsPrinted = true): " + issued;
         }
 
         /// <summary>
         /// Кнопка «Очистить буфер»: полностью перезаливает базу.
         /// Работает только при остановленной печати.
         /// </summary>
-        public async Task<string> RefillDatabaseAsync(CancellationToken ct)
+        public async Task<string> RefillDatabaseAsync(CancellationToken cancellationToken)
         {
-            if (IsPrinting || GetActiveRuntimes().Any(x => x.IsPrinting))
+            if (IsPrinting || GetRuntimes().Any(x => x.IsPrinting))
             {
                 throw new InvalidOperationException("Очистка буфера доступна только при остановленной печати. " +
                                                    "Сначала нажмите «Отмена».");
@@ -326,159 +319,50 @@ namespace LabelPrinter.Services
 
             Log.Info("Очистка буфера и перезаливка базы…");
 
-            foreach (var runtime in GetRuntimes())
+            if (Engine != null && Engine.CodeSource != null)
             {
-                int removed = await runtime.Supply.ClearBufferAsync(ct).ConfigureAwait(false);
-                if (removed > 0)
-                {
-                    Log.Info("Буфер принтера «" + runtime.Printer.Name + "» очищен.");
-                }
+                await Engine.CodeSource.ClearAsync(cancellationToken).ConfigureAwait(false);
             }
 
             var result = await _repository.RefillAllAsync(
                 _settings.InitialCodeCount,
-                GenerateCode,
-                ct).ConfigureAwait(false);
+                () => CodeFactory.Build(_settings.CodeFormat),
+                cancellationToken).ConfigureAwait(false);
 
             Log.Success("Перезаливка завершена. " + result.Summary);
 
-            // Сразу наполняем буферы, чтобы печать можно было запустить без задержки.
-            foreach (var runtime in GetRuntimes())
+            // Сразу наполняем буфер, чтобы печать можно было запустить без задержки.
+            if (Engine != null && Engine.CodeSource != null)
             {
-                int added = await runtime.Supply.TopUpAsync(ct).ConfigureAwait(false);
-                Log.Info("Буфер принтера «" + runtime.Printer.Name + "» наполнен: " + added + " кодов.");
+                int added = await Engine.CodeSource.EnsureBufferAsync(
+                    _settings.Runtime.BufferSize, 0, cancellationToken).ConfigureAwait(false);
+                Log.Info("Буфер наполнен: " + added + " кодов.");
             }
 
-            await RefreshMetricsAsync(ct).ConfigureAwait(false);
+            await RefreshMetricsAsync(cancellationToken).ConfigureAwait(false);
             return result.Summary;
-        }
-
-        // ------------------------------------------------------------------
-        //  Метрики
-        // ------------------------------------------------------------------
-
-        private void StartMetricsLoop()
-        {
-            if (_metricsLoop != null) return;
-
-            _cts = new CancellationTokenSource();
-            var token = _cts.Token;
-            _metricsLoop = Task.Run(async () =>
-            {
-                while (!token.IsCancellationRequested)
-                {
-                    try
-                    {
-                        await RefreshMetricsAsync(token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
-                    catch
-                    {
-                        // метрики не критичны
-                    }
-
-                    try
-                    {
-                        await Task.Delay(2000, token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break;
-                    }
-                }
-            }, token);
-        }
-
-        public async Task RefreshMetricsAsync(CancellationToken ct)
-        {
-            var runtimes = GetRuntimes();
-            var metrics = new PrintMetrics
-            {
-                TotalPrinters = runtimes.Count,
-                ConnectedPrinters = runtimes.Count(x => x.IsConnected),
-                ActivePrinters = runtimes.Count(x => x.Printer.Enabled)
-            };
-
-            foreach (var runtime in runtimes)
-            {
-                try
-                {
-                    int count = await runtime.Supply.BufferCountAsync(ct).ConfigureAwait(false);
-                    runtime.BufferCount = count;
-                    metrics.TotalBufferCount += count;
-                    metrics.TotalPrintedThisSession += runtime.PrintedThisSession;
-                }
-                catch
-                {
-                    // игнорируем — покажем прошлые значения
-                }
-            }
-
-            try
-            {
-                long free = await _repository.GetFreeAsync(ct).ConfigureAwait(false);
-                long issued = await _repository.GetIssuedAsync(ct).ConfigureAwait(false);
-                metrics.TotalFreeCodes = free;
-                metrics.TotalIssuedCodes = issued;
-
-                // Показываем и на карточке принтера.
-                foreach (var runtime in runtimes)
-                {
-                    runtime.FreeCodes = free;
-                }
-            }
-            catch
-            {
-                // игнорируем
-            }
-
-            Metrics = metrics;
-
-            foreach (var runtime in runtimes)
-            {
-                runtime.NotifyStateChanged();
-            }
         }
 
         // ------------------------------------------------------------------
         //  Завершение
         // ------------------------------------------------------------------
 
-        public async Task ShutdownPrintersAsync()
-        {
-            var cts = Interlocked.Exchange(ref _cts, null);
-            var loop = Interlocked.Exchange(ref _metricsLoop, null);
-
-            if (cts != null) cts.Cancel();
-            if (loop != null)
-            {
-                try { await Task.WhenAny(loop, Task.Delay(2000)).ConfigureAwait(false); } catch { }
-            }
-            if (cts != null) cts.Dispose();
-
-            List<PrinterRuntime> runtimes;
-            lock (_gate)
-            {
-                runtimes = _runtimes.ToList();
-                _runtimes.Clear();
-            }
-
-            foreach (var runtime in runtimes)
-            {
-                try { await runtime.StopAsync().ConfigureAwait(false); } catch { }
-                runtime.Dispose();
-            }
-        }
-
         public void Dispose()
         {
             if (_disposed) return;
             _disposed = true;
 
-            try { ShutdownPrintersAsync().GetAwaiter().GetResult(); } catch { }
+            try { Engine?.Dispose(); } catch { }
+
+            StopMetricsLoop();
+
+            try
+            {
+                var source = Interlocked.Exchange(ref _currentSource, null);
+                if (source != null) source.Dispose();
+            }
+            catch { }
+
             try { _repository.Dispose(); } catch { }
             CodeBufferFactory.Shutdown();
         }

@@ -1,10 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
 using Npgsql;
 using NpgsqlTypes;
 

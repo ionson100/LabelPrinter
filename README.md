@@ -9,7 +9,76 @@ WPF (.NET Framework 4.8), PostgreSQL + Redis, протокол **APLINK XML Prot
 
 ---
 
-## Быстрый старт
+## Состав решения
+
+| Проект | Что это | Платформы |
+|---|---|---|
+| **`src/LabelPrinter.Core/`** | **Библиотека.** Весь обмен с принтером | `net48`, `netstandard2.0` |
+| `src/LabelPrinter/` | WPF-приложение: интерфейс + PostgreSQL + Redis | `net48` |
+| `samples/LabelPrinter.Core.Sample/` | Пример подключения библиотеки к чужому приложению | `net9.0` |
+| `tests/LabelPrinter.SmokeTest/` | 118 проверок без интерфейса | `net48` |
+
+Библиотека **не зависит ни от чего внешнего**: ни Npgsql, ни StackExchange.Redis,
+ни Newtonsoft, ни WPF. Ссылки в собранной DLL — только `mscorlib`, `System`,
+`System.Core`. Её можно положить рядом с любым приложением, не создавая
+конфликтов версий, и подключить в том числе из .NET 5–9, MAUI или Avalonia.
+
+---
+
+## Как подключить к своему приложению
+
+Нужно реализовать один интерфейс — `ICodeSource` (откуда берутся коды) и
+подписаться на журнал. Больше ничего знать про протокол не требуется.
+
+```csharp
+using LabelPrinter.Core.Abstractions;
+using LabelPrinter.Core.Configuration;
+using LabelPrinter.Core.Diagnostics;
+using LabelPrinter.Core.Runtime;
+
+// 1. Журнал: по умолчанию библиотека молчит.
+Log.Sink = new DelegateLogSink(m => Console.WriteLine(m.Line));
+
+// 2. Движок
+var engine = new PrintEngine(new PrintRuntimeSettings(), new CodeFormatSettings());
+
+// 3. Откуда брать коды — единственное, что решаете вы
+engine.CodeSource = new MyCodeSource();   // ваша база, файл, очередь…
+
+// 4. Принтеры
+engine.Printers.Add(new PrinterSettings("Принтер 1", "192.168.1.10", 4100));
+
+await engine.StartAsync(ct);              // подключиться
+await engine.StartPrintingAsync(ct);      // печатать
+await engine.StopPrintingAsync(ct);       // остановить
+```
+
+`ICodeSource` — пять методов:
+
+```csharp
+public interface ICodeSource
+{
+    Task<int>  GetBufferCountAsync(CancellationToken ct);
+    Task<int>  EnsureBufferAsync(int capacity, int threshold, CancellationToken ct);
+    Task<string> TakeAsync(CancellationToken ct);      // null — кодов больше нет
+    Task<long> GetRemainingAsync(CancellationToken ct);
+    Task ClearAsync(CancellationToken ct);
+}
+```
+
+Готовый пример — в `samples/LabelPrinter.Core.Sample`, он собирается под .NET 9 и
+печатает без единой строки протокола:
+
+```
+samples\LabelPrinter.Core.Sample\bin\Release\net9.0\LabelPrinter.Core.Sample.exe 192.168.1.10 4100 demo code
+```
+
+Готовый пример источника кодов на PostgreSQL + Redis — `PostgresRedisCodeSource`
+в приложении.
+
+---
+
+## Быстрый старт приложения
 
 ```bash
 dotnet build LabelPrinter.sln -c Release
@@ -271,19 +340,36 @@ RETURNING c."Code";
 ## Структура
 
 ```
-src/LabelPrinter/
-  Core/        AppSettings, SettingsService, LogService, RelayCommand, AppPaths
-  Data/        CodesRepository — таблица, наполнение, атомарная выдача
-  Buffers/     ICodeBuffer, RedisCodeBuffer, InMemoryCodeBuffer, фабрика
-  Codes/       CodeFactory — генерация и разбор GS1
-  Protocol/    AplinkClient (TCP+кадрирование), AplinkResponse, команды,
-               RealPrinterClient, SimulatedPrinterClient
-  Services/    CodeSupply (политика буфера), PrinterRuntime (цикл печати),
-               PrintService (база, принтеры, общий пуск/стоп)
-  ViewModels/  MainViewModel, PrintersViewModel
-  Views/       MainWindow, PrintersWindow
-tests/LabelPrinter.SmokeTest/   проверки без интерфейса
+src/LabelPrinter.Core/           библиотека, без внешних зависимостей
+  Abstractions/    ICodeSource — единственная точка расширения
+  Codes/          CodeFactory — генерация и разбор GS1
+  Configuration/  PrinterSettings, CodeFormatSettings, PrintRuntimeSettings
+  Diagnostics/    Log + приёмники (файл, делегат, память, пустой)
+  Protocol/       AplinkClient (TCP+кадрирование), AplinkResponse, Commands,
+                  RealPrinterClient, SimulatedPrinterClient, IPrinterClient
+  Runtime/        PrintEngine — точка входа, PrinterRuntime — цикл печати
+
+src/LabelPrinter/                приложение WPF
+  Buffers/        Redis- и in-memory буферы
+  Configuration/  AppSettings, SettingsService — только своё: база и Redis
+  Data/           CodesRepository — таблица, наполнение, атомарная выдача
+  Infrastructure/ AppPaths, ObservableObject, RelayCommand
+  Services/       PrintService (слой над движком), PostgresRedisCodeSource
+  ViewModels/     MainViewModel, PrintersViewModel
+  Views/          MainWindow, PrintersWindow
+
+samples/LabelPrinter.Core.Sample/ пример подключения к чужому приложению
+tests/LabelPrinter.SmokeTest/     проверки без интерфейса
 ```
+
+### Граница между библиотекой и приложением
+
+Библиотека **не знает** про PostgreSQL и Redis: она умеет обеспечивать принтер
+следующим кодом и следить за темпом печати. Приложение реализует `ICodeSource`
+и отвечает за хранение.
+
+Один источник на все принтеры: коды не пересекаются, потому что выдача из базы
+помечает их `IsPrinted = true` в одной транзакции (`FOR UPDATE SKIP LOCKED`).
 
 ---
 

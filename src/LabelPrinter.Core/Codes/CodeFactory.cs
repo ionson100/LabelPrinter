@@ -1,9 +1,10 @@
 ﻿using System;
 using System.Globalization;
+using LabelPrinter.Core.Configuration;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace LabelPrinter.Codes
+namespace LabelPrinter.Core.Codes
 {
     /// <summary>
     /// Генерация кода этикетки по шаблону.
@@ -38,7 +39,7 @@ namespace LabelPrinter.Codes
         /// Строит один код. Случайные блоки берутся из криптографического ГПСЧ —
         /// коды не должны перебираться или повторяться.
         /// </summary>
-        public static string Build(Core.AppSettings settings)
+        public static string Build(Configuration.CodeFormatSettings settings)
         {
             if (settings == null) throw new ArgumentNullException("settings");
 
@@ -89,7 +90,7 @@ namespace LabelPrinter.Codes
         /// Оценка числа возможных кодов по длине случайных блоков.
         /// Показывается в журнале при старте, чтобы было видно запас уникальности.
         /// </summary>
-        public static double Combinations(Core.AppSettings settings)
+        public static double Combinations(Configuration.CodeFormatSettings settings)
         {
             if (settings == null) return 0;
             var n = (settings.CodeAlphabet ?? "").Length;
@@ -134,7 +135,7 @@ namespace LabelPrinter.Codes
         }
 
         /// <summary>Пример кода для журнала и проверки настроек.</summary>
-        public static string Sample(Core.AppSettings settings)
+        public static string Sample(Configuration.CodeFormatSettings settings)
         {
             return Build(settings);
         }
@@ -261,7 +262,7 @@ namespace LabelPrinter.Codes
             return true;
         }
 
-        public static string Describe(Core.AppSettings settings)
+        public static string Describe(Configuration.CodeFormatSettings settings)
         {
             double combinations = Combinations(settings);
             return string.Format(

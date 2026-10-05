@@ -1,10 +1,12 @@
-using System;
+﻿using System;
 using System.Windows;
 using System.Windows.Threading;
-using LabelPrinter.Core;
+using LabelPrinter.Core.Diagnostics;
 using LabelPrinter.Services;
 using LabelPrinter.ViewModels;
 using LabelPrinter.Views;
+using LabelPrinter.Infrastructure;
+using LabelPrinter.Configuration;
 
 namespace LabelPrinter
 {
